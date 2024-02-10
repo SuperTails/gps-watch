@@ -1,3 +1,6 @@
 /target
 Cargo.lock
 .DS_Store
+
+.gdb_history
+.idea
