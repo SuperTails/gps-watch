@@ -1,6 +1,6 @@
 [package]
-# TODO fix `authors` and `name` if you didn't use `cargo-generate`
 name = "gps-watch"
+authors = ["Gary Bailey", "Carson Swoveland", "Twain Byrnes"]
 edition = "2021"
 version = "0.1.0"
 
@@ -9,14 +9,14 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 defmt = { version = "0.3", features = ["encoding-rzcobs"] }
 defmt-brtt = { version = "0.1", default-features = false, features = ["rtt"] }
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-# TODO(4) Select the correct rtic backend
 rtic = { version = "2.0.0", features = [ "thumbv7-backend" ] }
-# TODO(5) Add hal as dependency
 stm32l4xx-hal = { version = "0.7.1", features = ["stm32l442"] }
-# TODO add a monotonic if you use scheduling
-rtic-monotonics = { version = "1.0.0", features = [ "cortex-m-systick", "systick-100hz"]}
+rtic-monotonics = { version = "1.0.0", features = ["cortex-m-systick", "systick-100hz"]}
 thiserror = { version = "1.0.50", package = "thiserror-core", default-features = false }
 embedded-graphics = "0.8.1"
+tinyvec = "1.6.0"
+#nmea0183 = "0.4.0"
+ublox = { version = "0.4.5", default-features = false }
 
 # cargo build/run
 [profile.dev]
@@ -24,6 +24,7 @@ codegen-units = 1
 debug = 2
 debug-assertions = true # <-
 incremental = false
+lto = "fat"
 opt-level = "s" # <-
 overflow-checks = true # <-
 
@@ -58,6 +59,7 @@ overflow-checks = false # <-
 
 [patch.crates-io]
 stm32l4xx-hal = { path = "./stm32l4xx-hal" }
+ublox = { path = "./ublox/ublox" }
 
 # uncomment this to switch from the crates.io version of defmt to its git version
 # check app-template's README for instructions

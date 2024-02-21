@@ -13,7 +13,9 @@ const HEIGHT: usize = 240;
 const WIDTH_BYTES: usize = WIDTH.div_ceil(8);
 const HEIGHT_BYTES: usize = HEIGHT.div_ceil(8);
 
+const UPDATE_BIT: u8 = 0b0000_0001;
 const VCOM_BIT: u8 = 0b0000_0010;
+const CLEAR_BIT: u8 = 0b0000_0100;
 
 // #[derive(thiserror::Error, Debug)]
 // pub enum DisplayError {
@@ -46,12 +48,12 @@ impl<'a, SPI, CS> SpiTransaction<'a, SPI, CS>
         }
     }
 
-    fn send(mut self, data: &[u8]) -> Self {
+    fn send(self, data: &[u8]) -> Self {
         self.spi.write(data).unwrap();
         self
     }
 
-    fn finish(mut self) {
+    fn finish(self) {
         self.cs.set_low().unwrap();
     }
 }
@@ -80,17 +82,18 @@ impl<SPI, CS> SharpMemDisplayDriver<SPI, CS>
     }
 
     pub fn clear(&mut self) {
-        self.start(0b0000_0100).send(&[0x00]).finish();
+        self.start(CLEAR_BIT).send(&[0x00]).finish();
     }
 
     pub fn write_line(&mut self, line: u8, data: &[u8; WIDTH_BYTES]) {
-        self.start(0b0000_0001).send(&[line]).send(data).send(&[0x00, 0x00]).finish();
+        self.start(UPDATE_BIT).send(&[line]).send(data).send(&[0x00, 0x00]).finish();
     }
 }
 
 pub struct SharpMemDisplay<SPI, CS> {
     buf: [[u8; WIDTH_BYTES]; HEIGHT],
     dirty: [u8; HEIGHT_BYTES],
+    dirty_any: bool,
     driver: SharpMemDisplayDriver<SPI, CS>
 }
 
@@ -102,6 +105,7 @@ impl<SPI, CS> SharpMemDisplay<SPI, CS>
         Self {
             buf: [[0; WIDTH_BYTES]; HEIGHT],
             dirty: [0; HEIGHT_BYTES],
+            dirty_any: false,
             driver: SharpMemDisplayDriver::new(spi, cs)
         }
     }
@@ -114,21 +118,39 @@ impl<SPI, CS> SharpMemDisplay<SPI, CS>
             self.buf[y][x / 8] &= !(1u8 << (x % 8));
         }
         self.dirty[y / 8] |= 1u8 << (y % 8);
+        self.dirty_any = true;
     }
 
     pub fn flush(&mut self) {
-        for y in 0usize..HEIGHT {
-            if (self.dirty[y / 8] & (1u8 << (y % 8))) != 0u8 {
-                self.driver.write_line(y as u8, &self.buf[y]);
-            }
+        // Don't send anything if there's nothing to flush
+        if !self.dirty_any {
+            return
         }
+        // For each line
+        self.buf.iter().enumerate()
+            // If the line is dirty
+            .filter(|(y, row)| (self.dirty[y / 8] & (1u8 << (y % 8))) != 0u8)
+            // Send it
+            .fold(
+                self.driver.start(UPDATE_BIT), // command byte
+                |trn, (y, row)|
+                    trn.send(&[y as u8]) // address byte
+                        .send(row) // row data
+                        .send(&[0x00]) // spacing byte
+            )
+            .send(&[0x00]) // termination byte
+            .finish();
+
+        // Clear dirty bits
         self.dirty = [0; HEIGHT_BYTES];
+        self.dirty_any = false;
     }
 
     pub fn clear(&mut self) {
+        self.driver.clear();
         self.buf = [[0xFF; WIDTH_BYTES]; HEIGHT];
         self.dirty = [0; HEIGHT_BYTES];
-        self.driver.clear();
+        self.dirty_any = false;
     }
 }
 

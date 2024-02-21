@@ -3,21 +3,31 @@
 #![feature(type_alias_impl_trait)]
 
 use gps_watch as _;
-use stm32l4xx_hal as hal;
 
-use hal::{pac, prelude::*};
+use stm32l4xx_hal::{self as hal, pac, prelude::*};
 use rtic_monotonics::create_systick_token;
 use rtic_monotonics::systick::Systick;
-use stm32l4xx_hal::gpio::{Alternate, Output, PA11, PB3, PB4, PB5, PinExt, PushPull};
+use stm32l4xx_hal::gpio::{Alternate, Output, PA10, PA11, PA9, PB3, PB4, PB5, PushPull};
 use stm32l4xx_hal::hal::spi::{Mode, Phase, Polarity};
-use stm32l4xx_hal::pac::SPI1;
+use stm32l4xx_hal::pac::{SPI1, USART1};
 use stm32l4xx_hal::spi::Spi;
 use defmt::{trace, info};
 use core::num::Wrapping;
 use embedded_graphics::primitives::PrimitiveStyle;
 use embedded_graphics::prelude::*;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::primitives::Rectangle;
+use stm32l4xx_hal::serial::Serial;
+use core::fmt::Write;
 use rtic::Mutex;
+use stm32l4xx_hal::pac::Interrupt;
+use stm32l4xx_hal::rcc::{ClockSecuritySystem, CrystalBypass};
+use stm32l4xx_hal::rtc::{Event, RtcClockSource, RtcConfig};
+use stm32l4xx_hal::serial;
+use stm32l4xx_hal::serial::Config;
+use gps_watch::gps::Gps;
 
+// Rename type to squash generics
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     Spi<SPI1, (
         PB3<Alternate<PushPull, 5>>,
@@ -25,23 +35,23 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
         PB5<Alternate<PushPull, 5>>
     )>, PA11<Output<PushPull>>>;
 
+type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull, 7>>)>;
+
 #[rtic::app(
     device = stm32l4xx_hal::pac,
     // peripherals = true,
     // TODO: Replace the `FreeInterrupt1, ...` with free interrupt vectors if software tasks are used
     // You can usually find the names of the interrupt vectors in the some_hal::pac::interrupt enum.
     dispatchers = [EXTI0],
-
 )]
 mod app {
-    use embedded_graphics::pixelcolor::BinaryColor;
-    use embedded_graphics::primitives::Rectangle;
     use super::*;
 
     // Shared resources go here
     #[shared]
     struct Shared {
-        display: SharpMemDisplay
+        display: SharpMemDisplay,
+        gps: Gps<GpsUart>
     }
 
     // Local resources go here
@@ -51,7 +61,7 @@ mod app {
     }
 
     #[init]
-    fn init(cx: init::Context) -> (Shared, Local) {
+    fn init(mut cx: init::Context) -> (Shared, Local) {
         trace!("init enter");
 
         // Configure clocks
@@ -65,30 +75,26 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let mut rcc = cx.device.RCC.constrain();
         let mut pwr = cx.device.PWR.constrain(&mut rcc.apb1r1);
+        // let clocks = rcc.cfgr.lse(CrystalBypass::Disable, ClockSecuritySystem::Disable).freeze(&mut flash.acr, &mut pwr);
         let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
 
         // Create SysTick monotonic for task scheduling
         Systick::start(
             cx.core.SYST,
-            4_000_000,
-            // 200_000,
+            clocks.sysclk().raw(),
             create_systick_token!()
         );
 
-        // Initialize SPI
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.ahb2);
         let mut gpiob = cx.device.GPIOB.split(&mut rcc.ahb2);
 
+        // Initialize SPI and display
         let mut cs = gpioa.pa11.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
         cs.set_low();
+        let sck = gpiob.pb3.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let mosi = gpiob.pb5.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let miso = gpiob.pb4.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
 
-        // <cs as hal::hal::digital::v2::OutputPin>;
-        let mut sck = gpiob.pb3.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let mut mosi = gpiob.pb5.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let mut miso = gpiob.pb4.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-
-
-        let SPI1_COPY = unsafe { core::ptr::read(&cx.device.SPI1) };
         let spi1 = hal::spi::Spi::spi1(
             cx.device.SPI1,
             (sck, miso, mosi),
@@ -96,22 +102,51 @@ mod app {
                 phase: Phase::CaptureOnFirstTransition,
                 polarity: Polarity::IdleLow
             },
+            true,
             1.MHz(),
             clocks,
             &mut rcc.apb2
         );
-        // SPI1_COPY.cr1.write(|w| w.lsbfirst().lsbfirst());
-        // let spi1_cr1 = 0x4001_3000 as *mut u32;
-        // unsafe { core::ptr::write_volatile(spi1_cr1, core::ptr::read_volatile(spi1_cr1) | (1u32 << 7)); }
 
-        let mut display: SharpMemDisplay = SharpMemDisplay::new(spi1, cs);
+        let display = SharpMemDisplay::new(spi1, cs);
 
+        // Initialize RTC and interrupts
+        // let mut rtc = hal::rtc::Rtc::rtc(
+        //     cx.device.RTC,
+        //     &mut rcc.apb1r1,
+        //     &mut rcc.bdcr,
+        //     &mut pwr.cr1,
+        //     RtcConfig::default().clock_config(RtcClockSource::LSE)
+        // );
+        // rtc.wakeup_timer().start(10000u16);
+        // rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
+        // rtic::pend(Interrupt::RTC_WKUP);
+
+        // Initialize UART for GPS
+        let tx = gpioa.pa9.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let rx = gpioa.pa10.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+
+        let mut gps_uart = hal::serial::Serial::usart1(
+            cx.device.USART1,
+            (tx, rx),
+            Config::default().baudrate(115200.bps()),
+            clocks,
+            &mut rcc.apb2
+        );
+        gps_uart.listen(serial::Event::Rxne);
+        rtic::pend(Interrupt::USART1);
+
+        let gps = Gps::new(gps_uart);
+
+        // Spawn tasks
         display_task::spawn().unwrap();
 
+        info!("done initializing!");
         trace!("init exit");
         (
             Shared {
-                display
+                display,
+                gps
             },
             Local {
                 // Initialization of local resources go here
@@ -127,7 +162,9 @@ mod app {
         // let device_stolen = unsafe { pac::Peripherals::steal() };
 
         loop {
-            core::hint::spin_loop();
+            trace!("idle spin");
+            rtic::export::wfi();
+
             // Sleep
             // rtic::export::wfi();
             // defmt::info!("hewo 1");
@@ -145,6 +182,16 @@ mod app {
         }
     }
 
+    #[task(binds = USART1, shared = [gps])]
+    fn on_uart(mut cx: on_uart::Context) {
+        cx.shared.gps.lock(|gps| gps.handle());
+    }
+
+    #[task(binds = RTC_WKUP)]
+    fn on_rtc(_cx: on_rtc::Context) {
+        info!("rtc wakeup!");
+    }
+
     // TODO: Add tasks
     #[task(
         priority = 1,
@@ -156,7 +203,6 @@ mod app {
 
         let mut i = Wrapping(0u8);
         loop {
-            Systick::delay(500.millis()).await;
             let stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 3);
             let rect_styled = Rectangle { top_left: Point {x: i.0 as i32, y: i.0 as i32}, size: Size { width: 20, height: 20 } }
                 .into_styled(stroke);
@@ -164,7 +210,8 @@ mod app {
                 rect_styled.draw(display).unwrap();
                 display.flush();
             });
-            info!("hello world");
+            Systick::delay(500.millis()).await;
+            // info!("loop {}", i.0);
             i += 1;
         }
     }
