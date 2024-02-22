@@ -147,7 +147,7 @@ mod app {
             &mut rcc.apb2
         );
         gps_uart.listen(serial::Event::Rxne);
-        rtic::pend(Interrupt::USART1);
+        // rtic::pend(Interrupt::USART1);
 
         // Spawn tasks
         display_task::spawn().unwrap();
@@ -183,7 +183,9 @@ mod app {
     #[task(binds = USART1, shared = [gps])]
     fn on_uart(mut cx: on_uart::Context) {
         info!("hewwo");
-        cx.shared.gps.lock(|gps| gps.handle());
+        cx.shared.gps.lock(|gps| {
+            gps.handle();
+        });
     }
 
     #[task(binds = RTC_WKUP)]

@@ -4,8 +4,8 @@ use ublox::{PacketRef, Parser};
 use tinyvec::ArrayVec;
 
 pub struct Gps<SERIAL> {
-    serial: SERIAL,
-    parser: Parser<ArrayVec<[u8; 256]>>
+    pub serial: SERIAL,
+    pub parser: Parser<ArrayVec<[u8; 256]>>
 }
 
 impl<SERIAL> Gps<SERIAL>

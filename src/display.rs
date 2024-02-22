@@ -134,7 +134,7 @@ impl<SPI, CS> SharpMemDisplay<SPI, CS>
             .fold(
                 self.driver.start(UPDATE_BIT), // command byte
                 |trn, (y, row)|
-                    trn.send(&[y as u8]) // address byte
+                    trn.send(&[(y + 1) as u8]) // address byte, row is 1-indexed
                         .send(row) // row data
                         .send(&[0x00]) // spacing byte
             )
