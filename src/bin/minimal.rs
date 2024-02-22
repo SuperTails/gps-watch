@@ -64,6 +64,19 @@ mod app {
     fn init(mut cx: init::Context) -> (Shared, Local) {
         trace!("init enter");
 
+        // #[cfg(debug_assertions)]
+        // {
+        //     // Enable debugging while the processor is sleeping
+        //     cx.device.DBGMCU.cr.write(|w| w
+        //         .dbg_sleep().set_bit()
+        //         .dbg_standby().set_bit()
+        //         .dbg_stop().set_bit()
+        //     );
+        //     cx.device.RCC.ahb1enr.write(|w| w.dma1en().set_bit());
+        // }
+
+        // const _: () = [][core::mem::size_of::<Shared>()];
+
         // Configure clocks
         // unsafe {
         //     // MSI is already on
@@ -108,7 +121,7 @@ mod app {
             &mut rcc.apb2
         );
 
-        let display = SharpMemDisplay::new(spi1, cs);
+        // let display = SharpMemDisplay::new(spi1, cs);
 
         // Initialize RTC and interrupts
         // let mut rtc = hal::rtc::Rtc::rtc(
@@ -136,8 +149,6 @@ mod app {
         gps_uart.listen(serial::Event::Rxne);
         rtic::pend(Interrupt::USART1);
 
-        let gps = Gps::new(gps_uart);
-
         // Spawn tasks
         display_task::spawn().unwrap();
 
@@ -145,8 +156,8 @@ mod app {
         trace!("init exit");
         (
             Shared {
-                display,
-                gps
+                display: SharpMemDisplay::new(spi1, cs),
+                gps: Gps::new(gps_uart)
             },
             Local {
                 // Initialization of local resources go here
@@ -159,31 +170,19 @@ mod app {
     fn idle(_: idle::Context) -> ! {
         trace!("idle enter");
 
-        // let device_stolen = unsafe { pac::Peripherals::steal() };
-
         loop {
-            trace!("idle spin");
+            trace!("sleep");
+            // Only sleep in release mode, since the debugger doesn't interact with sleep very nice
+            #[cfg(debug_assertions)]
+            core::hint::spin_loop();
+            #[cfg(not(debug_assertions))]
             rtic::export::wfi();
-
-            // Sleep
-            // rtic::export::wfi();
-            // defmt::info!("hewo 1");
-            // unsafe {
-            //     device_stolen.RCC.cr.write(|w| w.msirange().bits(0b0001).msirgsel().set_bit());
-            // }
-            // defmt::info!("hewo 2");
-            // // Return to our previously-selected MSI frequency
-            // device_stolen.RCC.cr.write(|w| w.msirgsel().set_bit());
-            // defmt::info!("hewo 3");
-            // unsafe {
-            //     device_stolen.RCC.cfgr.write(|w| w.sw().bits(0b00));
-            // }
-            // defmt::info!("hewo 4");
         }
     }
 
     #[task(binds = USART1, shared = [gps])]
     fn on_uart(mut cx: on_uart::Context) {
+        info!("hewwo");
         cx.shared.gps.lock(|gps| gps.handle());
     }
 
@@ -211,7 +210,7 @@ mod app {
                 display.flush();
             });
             Systick::delay(500.millis()).await;
-            // info!("loop {}", i.0);
+            info!("loop {}", i.0);
             i += 1;
         }
     }
