@@ -17,6 +17,7 @@ use embedded_graphics::primitives::PrimitiveStyle;
 use embedded_graphics::prelude::*;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::primitives::Rectangle;
+use embedded_graphics::text::Text;
 use stm32l4xx_hal::serial::Serial;
 use core::fmt::Write;
 use rtic::Mutex;
@@ -195,7 +196,7 @@ mod app {
     // TODO: Add tasks
     #[task(
         priority = 1,
-        shared = [display]
+        shared = [display, gps]
     )]
     async fn display_task(mut cx: display_task::Context) {
         trace!("display_task enter");
@@ -211,7 +212,6 @@ mod app {
                 display.flush();
             });
             Systick::delay(500.millis()).await;
-            info!("loop {}", i.0);
             i += 1;
         }
     }

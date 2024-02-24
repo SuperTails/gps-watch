@@ -81,7 +81,7 @@ impl UnderlyingBuffer for Vec<u8> {
     }
 }
 
-impl UnderlyingBuffer for tinyvec::ArrayVec<[u8; 256]> {
+impl UnderlyingBuffer for tinyvec::ArrayVec<[u8; 512]> {
     fn clear(&mut self) {
         self.clear();
     }
