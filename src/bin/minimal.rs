@@ -182,10 +182,14 @@ mod app {
 
     #[task(binds = USART1, shared = [gps])]
     fn on_uart(mut cx: on_uart::Context) {
-        info!("hewwo");
-        cx.shared.gps.lock(|gps| {
-            gps.handle();
-        });
+        info!("foo");
+        if let Ok(b) = cx.shared.gps.lock(|gps| gps.serial.read()) {
+            info!("hewwo {}", b);
+        }
+        // cx.shared.gps.lock(|gps| {
+        //     gps.handle();
+        // });
+
     }
 
     #[task(binds = RTC_WKUP)]
