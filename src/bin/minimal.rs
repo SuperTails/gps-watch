@@ -142,12 +142,11 @@ mod app {
         let mut gps_uart = hal::serial::Serial::usart1(
             cx.device.USART1,
             (tx, rx),
-            Config::default().baudrate(115200.bps()),
+            Config::default().baudrate(9600.bps()),
             clocks,
             &mut rcc.apb2
         );
         gps_uart.listen(serial::Event::Rxne);
-        // rtic::pend(Interrupt::USART1);
 
         // Spawn tasks
         display_task::spawn().unwrap();
@@ -182,13 +181,9 @@ mod app {
 
     #[task(binds = USART1, shared = [gps])]
     fn on_uart(mut cx: on_uart::Context) {
-        info!("foo");
-        if let Ok(b) = cx.shared.gps.lock(|gps| gps.serial.read()) {
-            info!("hewwo {}", b);
-        }
-        // cx.shared.gps.lock(|gps| {
-        //     gps.handle();
-        // });
+        cx.shared.gps.lock(|gps| {
+            gps.handle();
+        });
 
     }
 

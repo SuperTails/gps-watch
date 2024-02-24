@@ -17,6 +17,7 @@ embedded-graphics = "0.8.1"
 tinyvec = "1.6.0"
 #nmea0183 = "0.4.0"
 ublox = { version = "0.4.5", default-features = false }
+nb = "1.1.0"
 
 # cargo build/run
 [profile.dev]
