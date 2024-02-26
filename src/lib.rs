@@ -12,7 +12,7 @@ use tinyvec::ArrayVec; // memory layout
 
 pub mod display;
 pub mod gps;
-pub mod nmea;
+pub mod ubx;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
@@ -36,7 +36,7 @@ pub fn exit() -> ! {
     }
 }
 
-pub struct FmtBuf(ArrayVec<[u8; 256]>);
+pub struct FmtBuf(pub ArrayVec<[u8; 256]>);
 
 impl Write for FmtBuf {
     fn write_str(&mut self, s: &str) -> fmt::Result {

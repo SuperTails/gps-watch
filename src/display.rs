@@ -81,7 +81,7 @@ impl<SPI, CS> SharpMemDisplayDriver<SPI, CS>
         SpiTransaction::start(self, command)
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear_flush(&mut self) {
         self.start(CLEAR_BIT).send(&[0x00]).finish();
     }
 
@@ -147,10 +147,9 @@ impl<SPI, CS> SharpMemDisplay<SPI, CS>
     }
 
     pub fn clear(&mut self) {
-        self.driver.clear();
         self.buf = [[0xFF; WIDTH_BYTES]; HEIGHT];
-        self.dirty = [0; HEIGHT_BYTES];
-        self.dirty_any = false;
+        self.dirty = [0xFF; HEIGHT_BYTES];
+        self.dirty_any = true;
     }
 }
 

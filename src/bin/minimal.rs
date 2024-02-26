@@ -4,29 +4,28 @@
 
 use gps_watch as _;
 
+use hal::gpio::PA1;
 use stm32l4xx_hal::{self as hal, pac, prelude::*};
 use rtic_monotonics::create_systick_token;
 use rtic_monotonics::systick::Systick;
-use stm32l4xx_hal::gpio::{Alternate, Output, PA10, PA11, PA9, PB3, PB4, PB5, PushPull};
+use stm32l4xx_hal::gpio::{Alternate, Output, PA10, PA9, PB3, PB4, PB5, PushPull};
 use stm32l4xx_hal::hal::spi::{Mode, Phase, Polarity};
 use stm32l4xx_hal::pac::{SPI1, USART1};
 use stm32l4xx_hal::spi::Spi;
 use defmt::{trace, info};
-use core::num::Wrapping;
-use embedded_graphics::primitives::PrimitiveStyle;
 use embedded_graphics::prelude::*;
 use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::text::Text;
 use stm32l4xx_hal::serial::Serial;
 use core::fmt::Write;
-use rtic::Mutex;
-use stm32l4xx_hal::pac::Interrupt;
 use stm32l4xx_hal::rcc::{ClockSecuritySystem, CrystalBypass};
 use stm32l4xx_hal::rtc::{Event, RtcClockSource, RtcConfig};
 use stm32l4xx_hal::serial;
 use stm32l4xx_hal::serial::Config;
 use gps_watch::gps::Gps;
+use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyle};
+use gps_watch::FmtBuf;
+use core::num::Wrapping;
 
 // Rename type to squash generics
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
@@ -34,7 +33,7 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
         PB3<Alternate<PushPull, 5>>,
         PB4<Alternate<PushPull, 5>>,
         PB5<Alternate<PushPull, 5>>
-    )>, PA11<Output<PushPull>>>;
+    )>, PA1<Output<PushPull>>>;
 
 type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull, 7>>)>;
 
@@ -46,6 +45,8 @@ type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushP
     dispatchers = [EXTI0],
 )]
 mod app {
+
+
     use super::*;
 
     // Shared resources go here
@@ -58,6 +59,7 @@ mod app {
     // Local resources go here
     #[local]
     struct Local {
+        count: usize
         // TODO: Add resources
     }
 
@@ -103,7 +105,7 @@ mod app {
         let mut gpiob = cx.device.GPIOB.split(&mut rcc.ahb2);
 
         // Initialize SPI and display
-        let mut cs = gpioa.pa11.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
+        let mut cs = gpioa.pa1.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
         cs.set_low();
         let sck = gpiob.pb3.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
         let mosi = gpiob.pb5.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
@@ -149,6 +151,29 @@ mod app {
         );
         gps_uart.listen(serial::Event::Rxne);
 
+        // Initialize USB Serial
+        // let dm = gpioa.pa11.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        // let dp = gpioa.pa12.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+
+        // let usb = hal::usb::Peripheral {
+        //     usb: cx.device.USB,
+        //     pin_dm: dm,
+        //     pin_dp: dp
+        // };
+
+        // static USB_BUS: Once<UsbBus> = Once::new();
+        // USB_BUS.set(hal::usb::UsbBus::new(usb));
+
+        // // let _: () = USB_BUS.get().unwrap();
+        // let usb_serial = usbd_serial::SerialPort::new(USB_BUS.get().unwrap());
+
+        // let usb_dev = UsbDeviceBuilder::new(USB_BUS.get().unwrap(), UsbVidPid(0x1209, 0x0001))
+        //     .manufacturer("ECE500")
+        //     .product("Landhopper")
+        //     .serial_number("TEST")
+        //     .device_class(USB_CLASS_CDC)
+        //     .build();
+
         // Spawn tasks
         display_task::spawn().unwrap();
 
@@ -161,6 +186,7 @@ mod app {
             },
             Local {
                 // Initialization of local resources go here
+                count: 0
             },
         )
     }
@@ -171,6 +197,10 @@ mod app {
         trace!("idle enter");
 
         loop {
+
+            trace!("usb");
+
+
             trace!("sleep");
             // Only sleep in release mode, since the debugger doesn't interact with sleep very nice
             #[cfg(debug_assertions)]
@@ -180,12 +210,17 @@ mod app {
         }
     }
 
-    #[task(binds = USART1, shared = [gps])]
+    #[task(binds = USART1, shared = [gps], local = [count])]
     fn on_uart(mut cx: on_uart::Context) {
+        // cx.shared.gps.lock(|gps| {
+        //     gps.handle();
+        // });
         cx.shared.gps.lock(|gps| {
-            gps.handle();
-        });
-
+            if let Ok(b) = gps.serial.read() {
+                *cx.local.count += 1;
+                info!("got {:x} #{}", b, cx.local.count);
+            }
+        })
     }
 
     #[task(binds = RTC_WKUP)]
@@ -204,13 +239,27 @@ mod app {
 
         let mut i = Wrapping(0u8);
         loop {
-            let stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 3);
-            let rect_styled = Rectangle { top_left: Point {x: i.0 as i32, y: i.0 as i32}, size: Size { width: 20, height: 20 } }
-                .into_styled(stroke);
+            let pos = cx.shared.gps.lock(|gps| gps.position);
+            let mut txt = FmtBuf(Default::default());
+            write!(txt, "Lat: {}\nLon: {}", pos.latitude, pos.longitude).unwrap();
+            // info!("formatted: {}", txt.as_str());
             cx.shared.display.lock(|display| {
-                rect_styled.draw(display).unwrap();
+                display.clear();
+                Text::new(
+                    txt.as_str().unwrap(),
+                    Point::new(30, 30),
+                    MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
+                ).draw(display).unwrap();
                 display.flush();
             });
+
+            // let stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 3);
+            // let rect_styled = Rectangle { top_left: Point {x: i.0 as i32, y: i.0 as i32}, size: Size { width: 20, height: 20 } }
+            //     .into_styled(stroke);
+            // cx.shared.display.lock(|display| {
+            //     rect_styled.draw(display).unwrap();
+            //     display.flush();
+            // });
             Systick::delay(500.millis()).await;
             i += 1;
         }

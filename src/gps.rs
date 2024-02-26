@@ -2,39 +2,23 @@ use core::fmt::{self, Write};
 
 use defmt::{error, info};
 use stm32l4xx_hal::hal::serial;
-use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt, PacketRef, Parser, UartMode, UartPortId};
+use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt, UartMode, UartPortId};
 use tinyvec::ArrayVec;
 
-use crate::FmtBuf;
+use crate::{ubx::{UbxPacket, UbxParser}, FmtBuf};
 
-
-
-const UBLOX_BUFFER_SIZE: usize = 512;
-
-#[derive(Debug, defmt::Format)]
-pub enum State {
-    Sync0,
-    Sync1,
-    Class,
-    Id,
-    Length0,
-    Length1 { lo: u8 },
-    Body { remaining: u16 },
-    Checksum0,
-    Checksum1,
-}
-
+#[derive(Copy, Clone)]
 pub struct Position {
-    latitude: u32,
-    longitude: u32,
+    pub latitude: i32,
+    pub longitude: i32,
 }
 
 pub struct Gps<SERIAL> {
     pub serial: SERIAL,
-    pub parser: Parser<ArrayVec<[u8; UBLOX_BUFFER_SIZE]>>,
-    pub state: State,
+    pub parser: UbxParser,
 
     pub position: Position,
+    count: usize
 }
 
 impl<SERIAL> Gps<SERIAL>
@@ -45,9 +29,9 @@ impl<SERIAL> Gps<SERIAL>
     pub fn new(serial: SERIAL) -> Self {
         let mut s = Self {
             serial,
-            parser: Parser::new(ArrayVec::new()),
-            state: State::Sync0,
-            position: Position { latitude: 0, longitude: 0 }
+            parser: UbxParser::new(),
+            position: Position { latitude: 0, longitude: 0 },
+            count: 0
         };
 
         s.configure();
@@ -85,81 +69,17 @@ impl<SERIAL> Gps<SERIAL>
 
     pub fn handle(&mut self) {
         if let Ok(b) = self.serial.read() {
-            //let mut it = self.parser.consume(core::slice::from_ref(&b));
-            
-            //info!("stuff {}", self.state);
-
-            match self.state {
-                State::Sync0 => {
-                    if b == 0xB5 {
-                        self.parser.consume(core::slice::from_ref(&b));
-                        self.state = State::Sync1;
-                    }
-                }
-                State::Sync1 => {
-                    if b == 0x62 {
-                        self.parser.consume(core::slice::from_ref(&b));
-                        self.state = State::Class;
-                    } else {
-                        self.state = State::Sync0;
-                    }
-                }
-                State::Class => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    self.state = State::Id;
-                }
-                State::Id => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    self.state = State::Length0;
-                }
-                State::Length0 => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    self.state = State::Length1 { lo: b }
-                }
-                State::Length1 { lo } => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    let remaining = u16::from_le_bytes([lo, b]);
-                    if remaining == 0 {
-                        self.state = State::Checksum0;
-                    } else {
-                        self.state = State::Body { remaining };
-                    }
-                }
-                State::Body { remaining } => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    if remaining == 1 {
-                        self.state = State::Checksum0;
-                    } else {
-                        self.state = State::Body { remaining: remaining - 1 }
-                    }
-                }
-                State::Checksum0 => {
-                    self.parser.consume(core::slice::from_ref(&b));
-                    self.state = State::Checksum1;
-                }
-                State::Checksum1 => {
-                    let mut it = self.parser.consume(core::slice::from_ref(&b));
-
-                    loop {
-                        match it.next() {
-                            Some(Ok(pkt)) => match pkt {
-                                PacketRef::NavPvt(navpvt) => info!("lat: {}, lon: {}", navpvt.lat_degrees(), navpvt.lon_degrees()),
-                                _ => info!("other packet")
-                            },
-                            Some(Err(err)) => {
-                                let mut s = FmtBuf(Default::default());
-                                write!(&mut s, "{err:?}").unwrap();
-                                if let Some(s) = s.as_str() {
-                                    error!("ubx error {}", s);
-                                } else {
-                                    error!("ubx error");
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-
-                    self.state = State::Sync0;
+            self.count += 1;
+            info!("got {:x} #{}", b, self.count);
+            if let Some(r) = self.parser.process_byte(b) {
+                match r {
+                    Ok(p) => match p {
+                        UbxPacket::AckAck {..} => info!("ubx AckAck"),
+                        UbxPacket::AckNak {..} => info!("ubx AckNak"),
+                        UbxPacket::NavPvt(n) => info!("ubx lat={}, lon={}", n.lat, n.lon),
+                        UbxPacket::OtherPacket => info!("ubx other")
+                    },
+                    Err(e) => error!("ubx error: {:x}", e)
                 }
             }
         }
