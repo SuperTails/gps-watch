@@ -1,3 +1,0 @@
-[workspace]
-members = ["ublox", "ublox_derive"]
-resolver = "2"

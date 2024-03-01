@@ -151,6 +151,13 @@ impl<SPI, CS> SharpMemDisplay<SPI, CS>
         self.dirty = [0xFF; HEIGHT_BYTES];
         self.dirty_any = true;
     }
+
+    pub fn clear_flush(&mut self) {
+        self.driver.clear_flush();
+        self.buf = [[0xFF; WIDTH_BYTES]; HEIGHT];
+        self.dirty = [0; HEIGHT_BYTES];
+        self.dirty_any = false;
+    }
 }
 
 impl<SPI, CS> DrawTarget for SharpMemDisplay<SPI, CS>

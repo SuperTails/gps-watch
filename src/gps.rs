@@ -1,13 +1,13 @@
 use core::fmt::{self, Write};
 
-use defmt::{error, info};
+use defmt::{error, info, trace};
 use stm32l4xx_hal::hal::serial;
 use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt, UartMode, UartPortId};
 use tinyvec::ArrayVec;
 
-use crate::{ubx::{UbxPacket, UbxParser}, FmtBuf};
+use crate::{ubx::{UbxError, UbxPacket, UbxParser}, FmtBuf};
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Position {
     pub latitude: i32,
     pub longitude: i32,
@@ -18,7 +18,8 @@ pub struct Gps<SERIAL> {
     pub parser: UbxParser,
 
     pub position: Position,
-    count: usize
+    pub last_packet: Result<UbxPacket, UbxError>,
+    pub count: usize
 }
 
 impl<SERIAL> Gps<SERIAL>
@@ -26,11 +27,16 @@ impl<SERIAL> Gps<SERIAL>
           <SERIAL as serial::Read<u8>>::Error: core::fmt::Debug,
           <SERIAL as serial::Write<u8>>::Error: core::fmt::Debug,
 {
-    pub fn new(serial: SERIAL) -> Self {
+    pub fn new(mut serial: SERIAL) -> Self {
+
+        // Busy loop waiting for the GPS to be alive
+        while let Err(_) = serial.read() {}
+
         let mut s = Self {
             serial,
             parser: UbxParser::new(),
             position: Position { latitude: 0, longitude: 0 },
+            last_packet: Ok(UbxPacket::OtherPacket),
             count: 0
         };
 
@@ -70,17 +76,13 @@ impl<SERIAL> Gps<SERIAL>
     pub fn handle(&mut self) {
         if let Ok(b) = self.serial.read() {
             self.count += 1;
-            info!("got {:x} #{}", b, self.count);
+            trace!("got {:x} #{}", b, self.count);
             if let Some(r) = self.parser.process_byte(b) {
-                match r {
-                    Ok(p) => match p {
-                        UbxPacket::AckAck {..} => info!("ubx AckAck"),
-                        UbxPacket::AckNak {..} => info!("ubx AckNak"),
-                        UbxPacket::NavPvt(n) => info!("ubx lat={}, lon={}", n.lat, n.lon),
-                        UbxPacket::OtherPacket => info!("ubx other")
-                    },
-                    Err(e) => error!("ubx error: {:x}", e)
+                if let Ok(UbxPacket::NavPvt(ref navpvt)) = r {
+                    self.position.latitude = navpvt.lat;
+                    self.position.longitude = navpvt.lon;
                 }
+                self.last_packet = r;
             }
         }
     }

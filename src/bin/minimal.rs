@@ -4,7 +4,7 @@
 
 use gps_watch as _;
 
-use hal::gpio::PA1;
+use hal::gpio::{PA1, PA11, PA12};
 use stm32l4xx_hal::{self as hal, pac, prelude::*};
 use rtic_monotonics::create_systick_token;
 use rtic_monotonics::systick::Systick;
@@ -12,11 +12,12 @@ use stm32l4xx_hal::gpio::{Alternate, Output, PA10, PA9, PB3, PB4, PB5, PushPull}
 use stm32l4xx_hal::hal::spi::{Mode, Phase, Polarity};
 use stm32l4xx_hal::pac::{SPI1, USART1};
 use stm32l4xx_hal::spi::Spi;
-use defmt::{trace, info};
+use defmt::{trace, info, error};
 use embedded_graphics::prelude::*;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::text::Text;
 use stm32l4xx_hal::serial::Serial;
+use usb_device::bus::UsbBusAllocator;
 use core::fmt::Write;
 use stm32l4xx_hal::rcc::{ClockSecuritySystem, CrystalBypass};
 use stm32l4xx_hal::rtc::{Event, RtcClockSource, RtcConfig};
@@ -26,6 +27,12 @@ use gps_watch::gps::Gps;
 use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyle};
 use gps_watch::FmtBuf;
 use core::num::Wrapping;
+use embedded_graphics::mono_font::iso_8859_2::FONT_4X6;
+use hal::pac::{Interrupt, USB};
+use tinyvec::ArrayVec;
+use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
+use usbd_serial::USB_CLASS_CDC;
+use rtic_sync::make_channel;
 
 // Rename type to squash generics
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
@@ -46,6 +53,8 @@ type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushP
 )]
 mod app {
 
+    use defmt::debug;
+    use rtic_sync::channel::{Receiver, Sender};
 
     use super::*;
 
@@ -59,12 +68,11 @@ mod app {
     // Local resources go here
     #[local]
     struct Local {
-        count: usize
         // TODO: Add resources
     }
 
     #[init]
-    fn init(mut cx: init::Context) -> (Shared, Local) {
+    fn init(cx: init::Context) -> (Shared, Local) {
         trace!("init enter");
 
         // #[cfg(debug_assertions)]
@@ -119,7 +127,7 @@ mod app {
                 polarity: Polarity::IdleLow
             },
             true,
-            1.MHz(),
+            2.MHz(),
             clocks,
             &mut rcc.apb2
         );
@@ -151,31 +159,31 @@ mod app {
         );
         gps_uart.listen(serial::Event::Rxne);
 
+        // Enable the USB interrupt
+        // let usb = unsafe {hal::pac::Peripherals::steal()}.USB;
+        // usb.cntr.write(|w| w.wkupm().enabled());
+
         // Initialize USB Serial
-        // let dm = gpioa.pa11.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
-        // let dp = gpioa.pa12.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let dm = gpioa.pa11.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let dp = gpioa.pa12.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
 
-        // let usb = hal::usb::Peripheral {
-        //     usb: cx.device.USB,
-        //     pin_dm: dm,
-        //     pin_dp: dp
-        // };
+        // Turn on USB power
+        unsafe { pac::Peripherals::steal().PWR.cr2.modify(|_, w| w.usv().set_bit())};
 
-        // static USB_BUS: Once<UsbBus> = Once::new();
-        // USB_BUS.set(hal::usb::UsbBus::new(usb));
+        // Create USB peripheral object
+        let usb = hal::usb::Peripheral {
+            usb: cx.device.USB,
+            pin_dm: dm,
+            pin_dp: dp
+        };
 
-        // // let _: () = USB_BUS.get().unwrap();
-        // let usb_serial = usbd_serial::SerialPort::new(USB_BUS.get().unwrap());
-
-        // let usb_dev = UsbDeviceBuilder::new(USB_BUS.get().unwrap(), UsbVidPid(0x1209, 0x0001))
-        //     .manufacturer("ECE500")
-        //     .product("Landhopper")
-        //     .serial_number("TEST")
-        //     .device_class(USB_CLASS_CDC)
-        //     .build();
+        let (usb_tx, usb_rx) = make_channel!(u8, 16);
+        // Pass to task for remaining initialization
+        let _ = usb_poll::spawn(usb, usb_rx);
 
         // Spawn tasks
-        display_task::spawn().unwrap();
+        display_task::spawn(usb_tx.clone()).unwrap();
+        // gps_status::spawn().unwrap();
 
         info!("done initializing!");
         trace!("init exit");
@@ -186,7 +194,7 @@ mod app {
             },
             Local {
                 // Initialization of local resources go here
-                count: 0
+                // count: 0
             },
         )
     }
@@ -197,11 +205,7 @@ mod app {
         trace!("idle enter");
 
         loop {
-
-            trace!("usb");
-
-
-            trace!("sleep");
+            // trace!("sleep");
             // Only sleep in release mode, since the debugger doesn't interact with sleep very nice
             #[cfg(debug_assertions)]
             core::hint::spin_loop();
@@ -210,45 +214,111 @@ mod app {
         }
     }
 
-    #[task(binds = USART1, shared = [gps], local = [count])]
-    fn on_uart(mut cx: on_uart::Context) {
-        // cx.shared.gps.lock(|gps| {
-        //     gps.handle();
-        // });
-        cx.shared.gps.lock(|gps| {
-            if let Ok(b) = gps.serial.read() {
-                *cx.local.count += 1;
-                info!("got {:x} #{}", b, cx.local.count);
+    #[task(priority = 1)]
+    async fn usb_poll(_cx: usb_poll::Context, usb: hal::usb::Peripheral, mut rx: Receiver<'static, u8, 16>) {
+        trace!("usb_poll enter");
+
+        let usb_bus = hal::usb::UsbBus::new(usb);
+
+        let mut serial = usbd_serial::SerialPort::new(&usb_bus);
+
+        let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+            .manufacturer("ECE500")
+            .product("Landhopper")
+            .serial_number("TEST")
+            .device_class(USB_CLASS_CDC)
+            .build();
+
+        let mut tx_buf = ArrayVec::<[u8; 16]>::new();
+
+        loop {
+            Systick::delay(10.millis()).await;
+
+            debug!("usb_poll loop");
+
+            while tx_buf.len() < tx_buf.capacity() {
+                if let Ok(b) = rx.try_recv() {
+                    tx_buf.push(b);
+                } else { break; }
             }
-        })
+            trace!("usb state: {}", usb_dev.state());
+
+            if !usb_dev.poll(&mut [&mut serial]) {
+                continue;
+            }
+
+            match serial.write(&tx_buf) {
+                Ok(count) => {
+                    trace!("sent {} bytes to usb", count);
+                    tx_buf.drain(0..count).for_each(|_| ());
+                },
+                Err(_) => error!("usb error")
+            }
+        }
     }
+
+    #[task(binds = USART1, priority = 10, shared = [gps])]
+    fn on_uart(mut cx: on_uart::Context) {
+        cx.shared.gps.lock(|gps| {
+            gps.handle();
+        });
+        // cx.shared.gps.lock(|gps| {
+        //     while let Ok(b) = gps.serial.read() {
+        //         let _ = cx.shared.recv_buf.lock(|(buf, started)| {
+        //             if b == 0xB5 || *started {
+        //                 buf.try_push(b);
+        //                 *started = true;
+        //             }
+        //         });
+        //     }
+        // })
+    }
+
+    // #[task(priority = 1, shared = [recv_buf])]
+    // async fn gps_status(mut cx: gps_status::Context) {
+    //     loop {
+    //         Systick::delay(1000.millis()).await;
+    //         cx.shared.recv_buf.lock(|x| {
+    //             info!("received: {:x}", x.as_slice());
+    //             x.clear();
+    //         });
+    //     }
+    // }
 
     #[task(binds = RTC_WKUP)]
     fn on_rtc(_cx: on_rtc::Context) {
         info!("rtc wakeup!");
     }
 
-    // TODO: Add tasks
     #[task(
         priority = 1,
         shared = [display, gps]
     )]
-    async fn display_task(mut cx: display_task::Context) {
+    async fn display_task(mut cx: display_task::Context, tx: Sender<'static, u8, 16>) {
         trace!("display_task enter");
-        cx.shared.display.lock(|display| display.clear());
+        cx.shared.display.lock(|display| display.clear_flush());
 
         let mut i = Wrapping(0u8);
         loop {
-            let pos = cx.shared.gps.lock(|gps| gps.position);
+            debug!("display_task loop");
+            // let pos = cx.shared.gps.lock(|gps| gps.position);
             let mut txt = FmtBuf(Default::default());
-            write!(txt, "Lat: {}\nLon: {}", pos.latitude, pos.longitude).unwrap();
+            // write!(txt, "Lat: {}\nLon: {}", pos.latitude, pos.longitude).unwrap();
+            // cx.shared.recv_buf.lock(|(x, started)| {
+            //     let _ = write!(txt, "{:x} {x:x?}", x.len());
+            //     x.clear();
+            //     *started = false;
+            // });
+            cx.shared.gps.lock(|gps| {
+                let _ = write!(txt, "{} {:x?}", gps.count, gps.last_packet);
+            });
             // info!("formatted: {}", txt.as_str());
             cx.shared.display.lock(|display| {
                 display.clear();
                 Text::new(
                     txt.as_str().unwrap(),
                     Point::new(30, 30),
-                    MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
+                    MonoTextStyle::new(&FONT_4X6, BinaryColor::On)
                 ).draw(display).unwrap();
                 display.flush();
             });
@@ -260,7 +330,7 @@ mod app {
             //     rect_styled.draw(display).unwrap();
             //     display.flush();
             // });
-            Systick::delay(500.millis()).await;
+            Systick::delay(1000.millis()).await;
             i += 1;
         }
     }

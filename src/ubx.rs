@@ -24,7 +24,7 @@ impl PartialEq<(u8, u8)> for UbxChecksum {
     }
 }
 
-#[derive(defmt::Format)]
+#[derive(defmt::Format, Debug)]
 pub enum UbxError {
     BadChecksum {expect: (u8, u8), saw: (u8, u8)},
     BadStart {expect: u8, saw: u8},
@@ -74,6 +74,8 @@ impl UbxParser {
                 if b == 0x62 {
                     self.state = Sync2;
                     None
+                } else if b == 0xb5 {
+                    None
                 } else {
                     self.state = Start;
                     Some(Err(BadStart {expect: 0x62, saw: b}))
@@ -116,6 +118,7 @@ impl UbxParser {
                     None
                 } else {
                     let _ = self.buf.try_push(b);
+                    self.state = Payload { class, id, len, checksum: checksum.next(b) };
                     None
                 },
             Checksum1 { class, id, expect, found } =>
@@ -141,6 +144,7 @@ impl UbxParser {
     }
 }
 
+#[derive(Debug)]
 pub enum UbxPacket {
     AckAck {class: u8, id: u8},
     AckNak {class: u8, id: u8},
@@ -151,7 +155,7 @@ pub enum UbxPacket {
 // SAFETY: All fields are naturally aligned, so there is no padding.
 // Also, this device has the same endianness as UBX (little)
 #[repr(C)]
-#[derive(Pod, Zeroable, Copy, Clone)]
+#[derive(Pod, Zeroable, Copy, Clone, Debug)]
 pub struct NavPvt {
     pub i_tow: u32,
     pub year: u16,
