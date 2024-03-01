@@ -36,9 +36,9 @@ pub fn exit() -> ! {
     }
 }
 
-pub struct FmtBuf(pub ArrayVec<[u8; 256]>);
+pub struct FmtBuf<const N: usize = 256>(pub ArrayVec<[u8; N]>);
 
-impl Write for FmtBuf {
+impl<const N: usize> Write for FmtBuf<N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for b in s.bytes() {
             self.0.try_push(b);
@@ -47,8 +47,12 @@ impl Write for FmtBuf {
     }
 }
 
-impl FmtBuf {
+impl<const N: usize> FmtBuf<N> {
     pub fn as_str(&self) -> Option<&str> {
         core::str::from_utf8(self.0.as_slice()).ok()
     }
+}
+
+pub fn fabs(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() & !(1 << 31))
 }

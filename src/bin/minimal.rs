@@ -25,7 +25,7 @@ use stm32l4xx_hal::serial;
 use stm32l4xx_hal::serial::Config;
 use gps_watch::gps::Gps;
 use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyle};
-use gps_watch::FmtBuf;
+use gps_watch::{FmtBuf, fabs};
 use core::num::Wrapping;
 use embedded_graphics::mono_font::iso_8859_2::FONT_4X6;
 use hal::pac::{Interrupt, USB};
@@ -54,7 +54,10 @@ type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushP
 mod app {
 
     use defmt::debug;
+    use embedded_graphics::{mono_font::{iso_8859_3::FONT_6X12}, primitives::{PrimitiveStyleBuilder, Rectangle}};
+    use embedded_text::TextBox;
     use rtic_sync::channel::{Receiver, Sender};
+    use u8g2_fonts::{fonts, FontRenderer};
 
     use super::*;
 
@@ -72,7 +75,7 @@ mod app {
     }
 
     #[init]
-    fn init(cx: init::Context) -> (Shared, Local) {
+    fn init(mut cx: init::Context) -> (Shared, Local) {
         trace!("init enter");
 
         // #[cfg(debug_assertions)]
@@ -99,8 +102,8 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let mut rcc = cx.device.RCC.constrain();
         let mut pwr = cx.device.PWR.constrain(&mut rcc.apb1r1);
-        // let clocks = rcc.cfgr.lse(CrystalBypass::Disable, ClockSecuritySystem::Disable).freeze(&mut flash.acr, &mut pwr);
-        let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
+        let clocks = rcc.cfgr.lse(CrystalBypass::Disable, ClockSecuritySystem::Disable).freeze(&mut flash.acr, &mut pwr);
+        // let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
 
         // Create SysTick monotonic for task scheduling
         Systick::start(
@@ -135,15 +138,15 @@ mod app {
         // let display = SharpMemDisplay::new(spi1, cs);
 
         // Initialize RTC and interrupts
-        // let mut rtc = hal::rtc::Rtc::rtc(
-        //     cx.device.RTC,
-        //     &mut rcc.apb1r1,
-        //     &mut rcc.bdcr,
-        //     &mut pwr.cr1,
-        //     RtcConfig::default().clock_config(RtcClockSource::LSE)
-        // );
-        // rtc.wakeup_timer().start(10000u16);
-        // rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
+        let mut rtc = hal::rtc::Rtc::rtc(
+            cx.device.RTC,
+            &mut rcc.apb1r1,
+            &mut rcc.bdcr,
+            &mut pwr.cr1,
+            RtcConfig::default().clock_config(RtcClockSource::LSE)
+        );
+        rtc.wakeup_timer().start(10000u16);
+        rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
         // rtic::pend(Interrupt::RTC_WKUP);
 
         // Initialize UART for GPS
@@ -298,11 +301,15 @@ mod app {
         trace!("display_task enter");
         cx.shared.display.lock(|display| display.clear_flush());
 
+        let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
+
         let mut i = Wrapping(0u8);
         loop {
             debug!("display_task loop");
             // let pos = cx.shared.gps.lock(|gps| gps.position);
-            let mut txt = FmtBuf(Default::default());
+            let mut dbg_txt = FmtBuf::<512>(Default::default());
+            let mut time = FmtBuf::<8>(Default::default());
+            let mut coords = FmtBuf::<64>(Default::default());
             // write!(txt, "Lat: {}\nLon: {}", pos.latitude, pos.longitude).unwrap();
             // cx.shared.recv_buf.lock(|(x, started)| {
             //     let _ = write!(txt, "{:x} {x:x?}", x.len());
@@ -310,16 +317,54 @@ mod app {
             //     *started = false;
             // });
             cx.shared.gps.lock(|gps| {
-                let _ = write!(txt, "{} {:x?}", gps.count, gps.last_packet);
+                let _ = write!(dbg_txt, "Debug Info:\nReceived {} bytes\nLast Message: {:x?}", gps.count, gps.last_packet);
+
+                let pos = gps.pos();
+                let _ = write!(coords,
+                    "{:.4}°{}\n{:.4}°{}",
+                    fabs(pos.0),
+                    if pos.0 >= 0.0 { 'N' } else { 'S' },
+                    fabs(pos.1),
+                    if pos.1 >= 0.0 { 'E' } else { 'W' }
+                );
+
+                let _ = write!(time, "{}:{:02}", gps.time.0-5, gps.time.1);
             });
             // info!("formatted: {}", txt.as_str());
             cx.shared.display.lock(|display| {
                 display.clear();
-                Text::new(
-                    txt.as_str().unwrap(),
-                    Point::new(30, 30),
-                    MonoTextStyle::new(&FONT_4X6, BinaryColor::On)
+                // Debug infos
+                TextBox::new(
+                    dbg_txt.as_str().unwrap(),
+                    Rectangle {top_left: Point {x: 5, y: 135}, size: Size {width: 350, height: 100}},
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On)
                 ).draw(display).unwrap();
+
+                // Watch UI
+                Rectangle {top_left: Point {x: 0, y: 0}, size: Size {width: 128, height: 128}}
+                .into_styled(
+                    PrimitiveStyleBuilder::new()
+                    .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
+                    .stroke_color(BinaryColor::On)
+                    .stroke_width(4)
+                    .build()
+                ).draw(display).unwrap();
+
+                clock_font.render_aligned(
+                    time.as_str().unwrap(),
+                    Point {x: 64, y: 20},
+                    u8g2_fonts::types::VerticalPosition::Top,
+                    u8g2_fonts::types::HorizontalAlignment::Center,
+                    u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
+                    display
+                ).unwrap();
+
+                Text::new(
+                    coords.as_str().unwrap(),
+                    Point {x: 20, y: 80},
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On)
+                ).draw(display).unwrap();
+
                 display.flush();
             });
 
@@ -330,7 +375,7 @@ mod app {
             //     rect_styled.draw(display).unwrap();
             //     display.flush();
             // });
-            Systick::delay(1000.millis()).await;
+            Systick::delay(200.millis()).await;
             i += 1;
         }
     }

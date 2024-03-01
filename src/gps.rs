@@ -18,6 +18,7 @@ pub struct Gps<SERIAL> {
     pub parser: UbxParser,
 
     pub position: Position,
+    pub time: (u8, u8, u8),
     pub last_packet: Result<UbxPacket, UbxError>,
     pub count: usize
 }
@@ -35,6 +36,7 @@ impl<SERIAL> Gps<SERIAL>
         let mut s = Self {
             serial,
             parser: UbxParser::new(),
+            time: (10, 10, 0),
             position: Position { latitude: 0, longitude: 0 },
             last_packet: Ok(UbxPacket::OtherPacket),
             count: 0
@@ -81,9 +83,14 @@ impl<SERIAL> Gps<SERIAL>
                 if let Ok(UbxPacket::NavPvt(ref navpvt)) = r {
                     self.position.latitude = navpvt.lat;
                     self.position.longitude = navpvt.lon;
+                    self.time = (navpvt.hour, navpvt.min, navpvt.sec);
                 }
                 self.last_packet = r;
             }
         }
+    }
+
+    pub fn pos(&self) -> (f32, f32) {
+        ((self.position.latitude as f32) * 10e-7, (self.position.longitude as f32) * 10e-7)
     }
 }

@@ -68,7 +68,8 @@ impl UbxParser {
                     None
                 } else {
                     self.state = Start;
-                    Some(Err(BadStart {expect: 0xb5, saw: b}))
+                    // Some(Err(BadStart {expect: 0xb5, saw: b}))
+                    None
                 },
             Sync1 =>
                 if b == 0x62 {
@@ -94,10 +95,11 @@ impl UbxParser {
             },
             Len1 {class, id, len1, checksum} => {
                 let len = (b as u16) << 8 | (len1 as u16);
-                self.state = Len2 {class, id, len, checksum: checksum.next(b)};
                 if len as usize > UBX_BUF_SIZE {
+                    self.state = Start;
                     Some(Err(TooLarge(len)))
                 } else {
+                    self.state = Len2 {class, id, len, checksum: checksum.next(b)};
                     None
                 }
             },
