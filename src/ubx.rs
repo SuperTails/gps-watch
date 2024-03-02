@@ -1,5 +1,5 @@
-use tinyvec::ArrayVec;
 use bytemuck::{Pod, Zeroable};
+use tinyvec::ArrayVec;
 
 const UBX_BUF_SIZE: usize = 256;
 type UbxBuf = ArrayVec<[u8; UBX_BUF_SIZE]>;
@@ -24,12 +24,12 @@ impl PartialEq<(u8, u8)> for UbxChecksum {
     }
 }
 
-#[derive(defmt::Format, Debug)]
+#[derive(defmt::Format, Debug, Copy, Clone)]
 pub enum UbxError {
-    BadChecksum {expect: (u8, u8), saw: (u8, u8)},
-    BadStart {expect: u8, saw: u8},
+    BadChecksum { expect: (u8, u8), saw: (u8, u8) },
+    BadStart { expect: u8, saw: u8 },
     BadPayload,
-    TooLarge(u16)
+    TooLarge(u16),
 }
 use UbxError::*;
 
@@ -38,31 +38,58 @@ enum ParserState {
     Start,
     Sync1,
     Sync2,
-    Class {class: u8, checksum: UbxChecksum},
-    Id {class: u8, id: u8, checksum: UbxChecksum},
-    Len1 {class: u8, id: u8, len1: u8, checksum: UbxChecksum},
-    Len2 {class: u8, id: u8, len: u16, checksum: UbxChecksum},
-    Payload {class: u8, id: u8, len: u16, checksum: UbxChecksum},
-    Checksum1 {class: u8, id: u8, expect: UbxChecksum, found: u8},
+    Class {
+        class: u8,
+        checksum: UbxChecksum,
+    },
+    Id {
+        class: u8,
+        id: u8,
+        checksum: UbxChecksum,
+    },
+    Len1 {
+        class: u8,
+        id: u8,
+        len1: u8,
+        checksum: UbxChecksum,
+    },
+    Len2 {
+        class: u8,
+        id: u8,
+        len: u16,
+        checksum: UbxChecksum,
+    },
+    Payload {
+        class: u8,
+        id: u8,
+        len: u16,
+        checksum: UbxChecksum,
+    },
+    Checksum1 {
+        class: u8,
+        id: u8,
+        expect: UbxChecksum,
+        found: u8,
+    },
 }
 use ParserState::*;
 
 pub struct UbxParser {
     state: ParserState,
-    buf: UbxBuf
+    buf: UbxBuf,
 }
 
 impl UbxParser {
     pub fn new() -> Self {
         Self {
             state: Start,
-            buf: UbxBuf::new()
+            buf: UbxBuf::new(),
         }
     }
 
     fn feed(&mut self, b: u8) -> Option<Result<(u8, u8), UbxError>> {
         match self.state {
-            Start =>
+            Start => {
                 if b == 0xb5 {
                     self.state = Sync1;
                     None
@@ -70,8 +97,9 @@ impl UbxParser {
                     self.state = Start;
                     // Some(Err(BadStart {expect: 0xb5, saw: b}))
                     None
-                },
-            Sync1 =>
+                }
+            }
+            Sync1 => {
                 if b == 0x62 {
                     self.state = Sync2;
                     None
@@ -79,79 +107,161 @@ impl UbxParser {
                     None
                 } else {
                     self.state = Start;
-                    Some(Err(BadStart {expect: 0x62, saw: b}))
-                },
+                    Some(Err(BadStart {
+                        expect: 0x62,
+                        saw: b,
+                    }))
+                }
+            }
             Sync2 => {
-                self.state = Class {class: b, checksum: UbxChecksum::new().next(b)};
+                self.state = Class {
+                    class: b,
+                    checksum: UbxChecksum::new().next(b),
+                };
                 None
-            },
-            Class {class, checksum} => {
-                self.state = Id {class, id: b, checksum: checksum.next(b)};
+            }
+            Class { class, checksum } => {
+                self.state = Id {
+                    class,
+                    id: b,
+                    checksum: checksum.next(b),
+                };
                 None
-            },
-            Id {class, id, checksum} => {
-                self.state = Len1 {class, id, len1: b, checksum: checksum.next(b)};
+            }
+            Id {
+                class,
+                id,
+                checksum,
+            } => {
+                self.state = Len1 {
+                    class,
+                    id,
+                    len1: b,
+                    checksum: checksum.next(b),
+                };
                 None
-            },
-            Len1 {class, id, len1, checksum} => {
+            }
+            Len1 {
+                class,
+                id,
+                len1,
+                checksum,
+            } => {
                 let len = (b as u16) << 8 | (len1 as u16);
                 if len as usize > UBX_BUF_SIZE {
                     self.state = Start;
                     Some(Err(TooLarge(len)))
                 } else {
-                    self.state = Len2 {class, id, len, checksum: checksum.next(b)};
+                    self.state = Len2 {
+                        class,
+                        id,
+                        len,
+                        checksum: checksum.next(b),
+                    };
                     None
                 }
-            },
-            Len2 {class, id, len, checksum} =>
+            }
+            Len2 {
+                class,
+                id,
+                len,
+                checksum,
+            } => {
                 if len > 0 {
                     self.buf.clear();
                     let _ = self.buf.try_push(b);
-                    self.state = Payload { class, id, len, checksum: checksum.next(b) };
+                    self.state = Payload {
+                        class,
+                        id,
+                        len,
+                        checksum: checksum.next(b),
+                    };
                     None
                 } else {
                     self.buf.clear();
-                    self.state = Checksum1 { class, id, expect: checksum, found: b };
+                    self.state = Checksum1 {
+                        class,
+                        id,
+                        expect: checksum,
+                        found: b,
+                    };
                     None
-                },
-            Payload {class, id, len, checksum} =>
+                }
+            }
+            Payload {
+                class,
+                id,
+                len,
+                checksum,
+            } => {
                 if self.buf.len() == len as usize {
-                    self.state = Checksum1 { class, id, expect: checksum, found: b };
+                    self.state = Checksum1 {
+                        class,
+                        id,
+                        expect: checksum,
+                        found: b,
+                    };
                     None
                 } else {
                     let _ = self.buf.try_push(b);
-                    self.state = Payload { class, id, len, checksum: checksum.next(b) };
+                    self.state = Payload {
+                        class,
+                        id,
+                        len,
+                        checksum: checksum.next(b),
+                    };
                     None
-                },
-            Checksum1 { class, id, expect, found } =>
+                }
+            }
+            Checksum1 {
+                class,
+                id,
+                expect,
+                found,
+            } => {
                 if expect == (found, b) {
                     self.state = Start;
                     Some(Ok((class, id)))
                 } else {
                     self.state = Start;
-                    Some(Err(BadChecksum {expect: (expect.0, expect.1), saw: (found, b)}))
+                    Some(Err(BadChecksum {
+                        expect: (expect.0, expect.1),
+                        saw: (found, b),
+                    }))
                 }
+            }
         }
     }
 
     pub fn process_byte(&mut self, b: u8) -> Option<Result<UbxPacket, UbxError>> {
-        self.feed(b).map(|r| r.and_then(|(class, id)| match (class, id) {
-            (0x05, 0x01) => Ok(UbxPacket::AckAck {class: self.buf[0], id: self.buf[1]}),
-            (0x05, 0x00) => Ok(UbxPacket::AckNak {class: self.buf[0], id: self.buf[1]}),
-            (0x01, 0x07) => bytemuck::try_pod_read_unaligned(&self.buf)
-                .map(|x|UbxPacket::NavPvt(x))
-                .map_err(|_| BadPayload),
-            _ => Ok(UbxPacket::OtherPacket)
-        }))
+        self.feed(b).map(|r| {
+            r.and_then(|(class, id)| match (class, id) {
+                (0x05, 0x01) => Ok(UbxPacket::AckAck {
+                    class: self.buf[0],
+                    id: self.buf[1],
+                }),
+                (0x05, 0x00) => Ok(UbxPacket::AckNak {
+                    class: self.buf[0],
+                    id: self.buf[1],
+                }),
+                (0x01, 0x07) => bytemuck::try_pod_read_unaligned(&self.buf)
+                    .map(|x| UbxPacket::NavPvt(x))
+                    .map_err(|_| BadPayload),
+                _ => Ok(UbxPacket::OtherPacket),
+            })
+        })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum UbxPacket {
-    AckAck {class: u8, id: u8},
-    AckNak {class: u8, id: u8},
+    AckAck { class: u8, id: u8 },
+    AckNak { class: u8, id: u8 },
     NavPvt(NavPvt),
-    OtherPacket
+    InfNotice(UbxBuf),
+    InfError(UbxBuf),
+
+    OtherPacket,
 }
 
 // SAFETY: All fields are naturally aligned, so there is no padding.
@@ -198,5 +308,15 @@ pub struct NavPvt {
     pub head_veh: i32,
 
     pub mag_dec: i16,
-    pub mag_acc: u16
+    pub mag_acc: u16,
+}
+
+impl NavPvt {
+    pub fn lat_degrees(&self) -> f32 {
+        (self.lat as f32) * 10e-8
+    }
+
+    pub fn lon_degrees(&self) -> f32 {
+        (self.lon as f32) * 10e-8
+    }
 }

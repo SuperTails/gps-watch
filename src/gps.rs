@@ -1,45 +1,34 @@
-use core::fmt::{self, Write};
-
-use defmt::{error, info, trace};
+use defmt::trace;
 use stm32l4xx_hal::hal::serial;
-use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt, UartMode, UartPortId};
-use tinyvec::ArrayVec;
+use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt as TxNavPvt, UartMode, UartPortId};
 
-use crate::{ubx::{UbxError, UbxPacket, UbxParser}, FmtBuf};
-
-#[derive(Debug, Copy, Clone)]
-pub struct Position {
-    pub latitude: i32,
-    pub longitude: i32,
-}
+use crate::ubx::{NavPvt, UbxError, UbxPacket, UbxParser};
 
 pub struct Gps<SERIAL> {
     pub serial: SERIAL,
     pub parser: UbxParser,
 
-    pub position: Position,
-    pub time: (u8, u8, u8),
-    pub last_packet: Result<UbxPacket, UbxError>,
-    pub count: usize
+    pub last_packet: Option<Result<UbxPacket, UbxError>>,
+    pub last_navpvt: Option<NavPvt>,
+    pub count: usize,
 }
 
 impl<SERIAL> Gps<SERIAL>
-    where SERIAL: serial::Read<u8> + serial::Write<u8>,
-          <SERIAL as serial::Read<u8>>::Error: core::fmt::Debug,
-          <SERIAL as serial::Write<u8>>::Error: core::fmt::Debug,
+where
+    SERIAL: serial::Read<u8> + serial::Write<u8>,
+    <SERIAL as serial::Read<u8>>::Error: core::fmt::Debug,
+    <SERIAL as serial::Write<u8>>::Error: core::fmt::Debug,
 {
     pub fn new(mut serial: SERIAL) -> Self {
-
         // Busy loop waiting for the GPS to be alive
         while let Err(_) = serial.read() {}
 
         let mut s = Self {
             serial,
             parser: UbxParser::new(),
-            time: (10, 10, 0),
-            position: Position { latitude: 0, longitude: 0 },
-            last_packet: Ok(UbxPacket::OtherPacket),
-            count: 0
+            last_packet: None,
+            last_navpvt: None,
+            count: 0,
         };
 
         s.configure();
@@ -62,13 +51,15 @@ impl<SERIAL> Gps<SERIAL>
             out_proto_mask: ublox::OutProtoMask::UBLOX,
             flags: 0,
             reserved5: 0,
-        }.into_packet_bytes();
+        }
+        .into_packet_bytes();
 
         for b in packet {
             nb::block!(self.serial.write(b)).unwrap();
         }
 
-        let packet = CfgMsgAllPortsBuilder::set_rate_for::<NavPvt>([1, 1, 1, 1, 1, 1]).into_packet_bytes();
+        let packet =
+            CfgMsgAllPortsBuilder::set_rate_for::<TxNavPvt>([1, 1, 1, 1, 1, 1]).into_packet_bytes();
 
         for b in packet {
             nb::block!(self.serial.write(b)).unwrap();
@@ -81,16 +72,10 @@ impl<SERIAL> Gps<SERIAL>
             trace!("got {:x} #{}", b, self.count);
             if let Some(r) = self.parser.process_byte(b) {
                 if let Ok(UbxPacket::NavPvt(ref navpvt)) = r {
-                    self.position.latitude = navpvt.lat;
-                    self.position.longitude = navpvt.lon;
-                    self.time = (navpvt.hour, navpvt.min, navpvt.sec);
+                    self.last_navpvt = Some(*navpvt);
                 }
-                self.last_packet = r;
+                self.last_packet = Some(r);
             }
         }
-    }
-
-    pub fn pos(&self) -> (f32, f32) {
-        ((self.position.latitude as f32) * 10e-7, (self.position.longitude as f32) * 10e-7)
     }
 }

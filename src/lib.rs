@@ -1,7 +1,10 @@
 #![no_main]
 #![no_std]
 
-use core::{fmt::{self, Write}, sync::atomic::{AtomicUsize, Ordering}};
+use core::{
+    fmt::{self, Write},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use defmt_brtt as _; // global logger
 
 use panic_probe as _;
@@ -51,8 +54,19 @@ impl<const N: usize> FmtBuf<N> {
     pub fn as_str(&self) -> Option<&str> {
         core::str::from_utf8(self.0.as_slice()).ok()
     }
+
+    pub fn new() -> Self {
+        Self(Default::default())
+    }
 }
 
-pub fn fabs(x: f32) -> f32 {
-    f32::from_bits(x.to_bits() & !(1 << 31))
+// This isn't in core for some reason, so do this to avoid pulling in a dependency
+pub trait Abs {
+    fn abs(self) -> Self;
+}
+
+impl Abs for f32 {
+    fn abs(self) -> Self {
+        f32::from_bits(self.to_bits() & 0x7fff_ffff)
+    }
 }

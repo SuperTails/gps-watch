@@ -3,44 +3,55 @@
 #![feature(type_alias_impl_trait)]
 
 use gps_watch as _;
+use gps_watch::{gps::Gps, Abs as _, FmtBuf};
 
-use hal::gpio::{PA1, PA11, PA12};
-use stm32l4xx_hal::{self as hal, pac, prelude::*};
-use rtic_monotonics::create_systick_token;
-use rtic_monotonics::systick::Systick;
-use stm32l4xx_hal::gpio::{Alternate, Output, PA10, PA9, PB3, PB4, PB5, PushPull};
-use stm32l4xx_hal::hal::spi::{Mode, Phase, Polarity};
-use stm32l4xx_hal::pac::{SPI1, USART1};
-use stm32l4xx_hal::spi::Spi;
-use defmt::{trace, info, error};
-use embedded_graphics::prelude::*;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::text::Text;
-use stm32l4xx_hal::serial::Serial;
-use usb_device::bus::UsbBusAllocator;
-use core::fmt::Write;
-use stm32l4xx_hal::rcc::{ClockSecuritySystem, CrystalBypass};
-use stm32l4xx_hal::rtc::{Event, RtcClockSource, RtcConfig};
-use stm32l4xx_hal::serial;
-use stm32l4xx_hal::serial::Config;
-use gps_watch::gps::Gps;
-use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyle};
-use gps_watch::{FmtBuf, fabs};
-use core::num::Wrapping;
-use embedded_graphics::mono_font::iso_8859_2::FONT_4X6;
-use hal::pac::{Interrupt, USB};
+use core::{fmt::Write, num::Wrapping};
+use defmt::{debug, error, info, trace};
+use embedded_graphics::{
+    mono_font::{iso_8859_3::FONT_6X12, MonoTextStyle},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::{PrimitiveStyleBuilder, Rectangle},
+    text::Text,
+};
+use embedded_text::TextBox;
+use hal::rtc::Rtc;
+use rtic_monotonics::{create_systick_token, systick::Systick};
+use rtic_sync::{
+    channel::{Receiver, Sender},
+    make_channel,
+};
+use stm32_usbd::UsbBus;
+use stm32l4xx_hal::{
+    self as hal,
+    gpio::{Alternate, Output, PushPull, PA1, PA10, PA9, PB3, PB4, PB5},
+    hal::spi::{Mode, Phase, Polarity},
+    pac,
+    pac::{SPI1, USART1},
+    prelude::*,
+    rcc::{ClockSecuritySystem, CrystalBypass},
+    rtc::{Event, RtcClockSource, RtcConfig},
+    serial,
+    serial::{Config, Serial},
+    spi::Spi,
+};
 use tinyvec::ArrayVec;
+use u8g2_fonts::{fonts, FontRenderer};
 use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
-use usbd_serial::USB_CLASS_CDC;
-use rtic_sync::make_channel;
+use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 // Rename type to squash generics
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
-    Spi<SPI1, (
-        PB3<Alternate<PushPull, 5>>,
-        PB4<Alternate<PushPull, 5>>,
-        PB5<Alternate<PushPull, 5>>
-    )>, PA1<Output<PushPull>>>;
+    Spi<
+        SPI1,
+        (
+            PB3<Alternate<PushPull, 5>>,
+            PB4<Alternate<PushPull, 5>>,
+            PB5<Alternate<PushPull, 5>>,
+        ),
+    >,
+    PA1<Output<PushPull>>,
+>;
 
 type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull, 7>>)>;
 
@@ -53,19 +64,13 @@ type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushP
 )]
 mod app {
 
-    use defmt::debug;
-    use embedded_graphics::{mono_font::{iso_8859_3::FONT_6X12}, primitives::{PrimitiveStyleBuilder, Rectangle}};
-    use embedded_text::TextBox;
-    use rtic_sync::channel::{Receiver, Sender};
-    use u8g2_fonts::{fonts, FontRenderer};
-
     use super::*;
 
     // Shared resources go here
     #[shared]
     struct Shared {
         display: SharpMemDisplay,
-        gps: Gps<GpsUart>
+        gps: Gps<GpsUart>,
     }
 
     // Local resources go here
@@ -102,63 +107,74 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let mut rcc = cx.device.RCC.constrain();
         let mut pwr = cx.device.PWR.constrain(&mut rcc.apb1r1);
-        let clocks = rcc.cfgr.lse(CrystalBypass::Disable, ClockSecuritySystem::Disable).freeze(&mut flash.acr, &mut pwr);
+        let clocks = rcc
+            .cfgr
+            .lse(CrystalBypass::Disable, ClockSecuritySystem::Disable)
+            .freeze(&mut flash.acr, &mut pwr);
         // let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
 
         // Create SysTick monotonic for task scheduling
-        Systick::start(
-            cx.core.SYST,
-            clocks.sysclk().raw(),
-            create_systick_token!()
-        );
+        Systick::start(cx.core.SYST, clocks.sysclk().raw(), create_systick_token!());
 
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.ahb2);
         let mut gpiob = cx.device.GPIOB.split(&mut rcc.ahb2);
 
         // Initialize SPI and display
-        let mut cs = gpioa.pa1.into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
+        let mut cs = gpioa
+            .pa1
+            .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
         cs.set_low();
-        let sck = gpiob.pb3.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let mosi = gpiob.pb5.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let miso = gpiob.pb4.into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let sck = gpiob
+            .pb3
+            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let mosi = gpiob
+            .pb5
+            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let miso = gpiob
+            .pb4
+            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
 
-        let spi1 = hal::spi::Spi::spi1(
+        let spi1 = Spi::spi1(
             cx.device.SPI1,
             (sck, miso, mosi),
             Mode {
                 phase: Phase::CaptureOnFirstTransition,
-                polarity: Polarity::IdleLow
+                polarity: Polarity::IdleLow,
             },
             true,
             2.MHz(),
             clocks,
-            &mut rcc.apb2
+            &mut rcc.apb2,
         );
 
         // let display = SharpMemDisplay::new(spi1, cs);
 
         // Initialize RTC and interrupts
-        let mut rtc = hal::rtc::Rtc::rtc(
+        let mut rtc = Rtc::rtc(
             cx.device.RTC,
             &mut rcc.apb1r1,
             &mut rcc.bdcr,
             &mut pwr.cr1,
-            RtcConfig::default().clock_config(RtcClockSource::LSE)
+            RtcConfig::default().clock_config(RtcClockSource::LSE),
         );
         rtc.wakeup_timer().start(10000u16);
         rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
         // rtic::pend(Interrupt::RTC_WKUP);
 
         // Initialize UART for GPS
-        let tx = gpioa.pa9.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
-        let rx = gpioa.pa10.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let tx = gpioa
+            .pa9
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let rx = gpioa
+            .pa10
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
 
-        let mut gps_uart = hal::serial::Serial::usart1(
+        let mut gps_uart = Serial::usart1(
             cx.device.USART1,
             (tx, rx),
             Config::default().baudrate(9600.bps()),
             clocks,
-            &mut rcc.apb2
+            &mut rcc.apb2,
         );
         gps_uart.listen(serial::Event::Rxne);
 
@@ -167,17 +183,26 @@ mod app {
         // usb.cntr.write(|w| w.wkupm().enabled());
 
         // Initialize USB Serial
-        let dm = gpioa.pa11.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
-        let dp = gpioa.pa12.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let dm = gpioa
+            .pa11
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+        let dp = gpioa
+            .pa12
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
 
         // Turn on USB power
-        unsafe { pac::Peripherals::steal().PWR.cr2.modify(|_, w| w.usv().set_bit())};
+        unsafe {
+            pac::Peripherals::steal()
+                .PWR
+                .cr2
+                .modify(|_, w| w.usv().set_bit())
+        };
 
         // Create USB peripheral object
         let usb = hal::usb::Peripheral {
             usb: cx.device.USB,
             pin_dm: dm,
-            pin_dp: dp
+            pin_dp: dp,
         };
 
         let (usb_tx, usb_rx) = make_channel!(u8, 16);
@@ -193,7 +218,7 @@ mod app {
         (
             Shared {
                 display: SharpMemDisplay::new(spi1, cs),
-                gps: Gps::new(gps_uart)
+                gps: Gps::new(gps_uart),
             },
             Local {
                 // Initialization of local resources go here
@@ -218,12 +243,16 @@ mod app {
     }
 
     #[task(priority = 1)]
-    async fn usb_poll(_cx: usb_poll::Context, usb: hal::usb::Peripheral, mut rx: Receiver<'static, u8, 16>) {
+    async fn usb_poll(
+        _cx: usb_poll::Context,
+        usb: hal::usb::Peripheral,
+        mut rx: Receiver<'static, u8, 16>,
+    ) {
         trace!("usb_poll enter");
 
-        let usb_bus = hal::usb::UsbBus::new(usb);
+        let usb_bus = UsbBus::new(usb);
 
-        let mut serial = usbd_serial::SerialPort::new(&usb_bus);
+        let mut serial = SerialPort::new(&usb_bus);
 
         let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
             .manufacturer("ECE500")
@@ -242,7 +271,9 @@ mod app {
             while tx_buf.len() < tx_buf.capacity() {
                 if let Ok(b) = rx.try_recv() {
                     tx_buf.push(b);
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             trace!("usb state: {}", usb_dev.state());
 
@@ -254,8 +285,8 @@ mod app {
                 Ok(count) => {
                     trace!("sent {} bytes to usb", count);
                     tx_buf.drain(0..count).for_each(|_| ());
-                },
-                Err(_) => error!("usb error")
+                }
+                Err(_) => error!("usb error"),
             }
         }
     }
@@ -265,16 +296,6 @@ mod app {
         cx.shared.gps.lock(|gps| {
             gps.handle();
         });
-        // cx.shared.gps.lock(|gps| {
-        //     while let Ok(b) = gps.serial.read() {
-        //         let _ = cx.shared.recv_buf.lock(|(buf, started)| {
-        //             if b == 0xB5 || *started {
-        //                 buf.try_push(b);
-        //                 *started = true;
-        //             }
-        //         });
-        //     }
-        // })
     }
 
     // #[task(priority = 1, shared = [recv_buf])]
@@ -297,7 +318,7 @@ mod app {
         priority = 1,
         shared = [display, gps]
     )]
-    async fn display_task(mut cx: display_task::Context, tx: Sender<'static, u8, 16>) {
+    async fn display_task(mut cx: display_task::Context, _tx: Sender<'static, u8, 16>) {
         trace!("display_task enter");
         cx.shared.display.lock(|display| display.clear_flush());
 
@@ -306,64 +327,90 @@ mod app {
         let mut i = Wrapping(0u8);
         loop {
             debug!("display_task loop");
-            // let pos = cx.shared.gps.lock(|gps| gps.position);
-            let mut dbg_txt = FmtBuf::<512>(Default::default());
-            let mut time = FmtBuf::<8>(Default::default());
-            let mut coords = FmtBuf::<64>(Default::default());
-            // write!(txt, "Lat: {}\nLon: {}", pos.latitude, pos.longitude).unwrap();
-            // cx.shared.recv_buf.lock(|(x, started)| {
-            //     let _ = write!(txt, "{:x} {x:x?}", x.len());
-            //     x.clear();
-            //     *started = false;
-            // });
-            cx.shared.gps.lock(|gps| {
-                let _ = write!(dbg_txt, "Debug Info:\nReceived {} bytes\nLast Message: {:x?}", gps.count, gps.last_packet);
+            let mut dbg_txt = FmtBuf::<512>::new();
+            let mut time = FmtBuf::<8>::new();
+            let mut coords = FmtBuf::<64>::new();
+            let (last_navpvt, last_packet, count) = cx
+                .shared
+                .gps
+                .lock(|gps| (gps.last_navpvt, gps.last_packet, gps.count));
+            let _ = write!(
+                dbg_txt,
+                "Debug Info:\nReceived {} bytes\nLast Packet: {:x?}",
+                count, last_packet
+            );
+            if let Some(n) = last_navpvt {
+                write!(time, "{}:{:02}", n.hour - 5, n.min).unwrap();
 
-                let pos = gps.pos();
-                let _ = write!(coords,
+                let lat = n.lat_degrees();
+                let lon = n.lon_degrees();
+                write!(
+                    coords,
                     "{:.4}°{}\n{:.4}°{}",
-                    fabs(pos.0),
-                    if pos.0 >= 0.0 { 'N' } else { 'S' },
-                    fabs(pos.1),
-                    if pos.1 >= 0.0 { 'E' } else { 'W' }
-                );
+                    lat.abs(),
+                    if lat >= 0.0 { 'N' } else { 'S' },
+                    lon.abs(),
+                    if lon >= 0.0 { 'E' } else { 'W' }
+                )
+                .unwrap();
+            } else {
+                write!(time, "10:10").unwrap();
+                write!(coords, "No Fix").unwrap();
+            }
 
-                let _ = write!(time, "{}:{:02}", gps.time.0-5, gps.time.1);
-            });
-            // info!("formatted: {}", txt.as_str());
             cx.shared.display.lock(|display| {
                 display.clear();
                 // Debug infos
                 TextBox::new(
                     dbg_txt.as_str().unwrap(),
-                    Rectangle {top_left: Point {x: 5, y: 135}, size: Size {width: 350, height: 100}},
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On)
-                ).draw(display).unwrap();
+                    Rectangle {
+                        top_left: Point { x: 5, y: 135 },
+                        size: Size {
+                            width: 350,
+                            height: 100,
+                        },
+                    },
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                )
+                .draw(display)
+                .unwrap();
 
                 // Watch UI
-                Rectangle {top_left: Point {x: 0, y: 0}, size: Size {width: 128, height: 128}}
+                Rectangle {
+                    top_left: Point { x: 0, y: 0 },
+                    size: Size {
+                        width: 128,
+                        height: 128,
+                    },
+                }
                 .into_styled(
                     PrimitiveStyleBuilder::new()
-                    .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
-                    .stroke_color(BinaryColor::On)
-                    .stroke_width(4)
-                    .build()
-                ).draw(display).unwrap();
+                        .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
+                        .stroke_color(BinaryColor::On)
+                        .stroke_width(4)
+                        .build(),
+                )
+                .draw(display)
+                .unwrap();
 
-                clock_font.render_aligned(
-                    time.as_str().unwrap(),
-                    Point {x: 64, y: 20},
-                    u8g2_fonts::types::VerticalPosition::Top,
-                    u8g2_fonts::types::HorizontalAlignment::Center,
-                    u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
-                    display
-                ).unwrap();
+                clock_font
+                    .render_aligned(
+                        time.as_str().unwrap(),
+                        Point { x: 64, y: 20 },
+                        u8g2_fonts::types::VerticalPosition::Top,
+                        u8g2_fonts::types::HorizontalAlignment::Center,
+                        u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
+                        display,
+                    )
+                    .unwrap();
 
                 Text::new(
                     coords.as_str().unwrap(),
-                    Point {x: 20, y: 80},
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On)
-                ).draw(display).unwrap();
+                    Point { x: 20, y: 80 },
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                )
+                .draw(display)
+                .unwrap();
 
                 display.flush();
             });
