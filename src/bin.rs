@@ -15,7 +15,6 @@ use embedded_graphics::{
     text::Text,
 };
 use embedded_text::TextBox;
-use hal::rtc::Rtc;
 use rtic_monotonics::{create_systick_token, systick::Systick};
 use rtic_sync::{
     channel::{Receiver, Sender},
@@ -24,13 +23,13 @@ use rtic_sync::{
 use stm32_usbd::UsbBus;
 use stm32l4xx_hal::{
     self as hal,
-    gpio::{Alternate, Output, PushPull, PA1, PA10, PA9, PB3, PB4, PB5},
+    gpio::{Alternate, Output, PushPull, PA1, PA2, PA3, PB3, PB4, PB5},
     hal::spi::{Mode, Phase, Polarity},
     pac,
-    pac::{SPI1, USART1},
+    pac::{SPI1, LPUART1},
     prelude::*,
     rcc::{ClockSecuritySystem, CrystalBypass},
-    rtc::{Event, RtcClockSource, RtcConfig},
+    rtc::{Event, Rtc, RtcClockSource, RtcConfig},
     serial,
     serial::{Config, Serial},
     spi::Spi,
@@ -53,14 +52,11 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     PA1<Output<PushPull>>,
 >;
 
-type GpsUart = Serial<USART1, (PA9<Alternate<PushPull, 7>>, PA10<Alternate<PushPull, 7>>)>;
+type GpsUart = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
 
 #[rtic::app(
     device = stm32l4xx_hal::pac,
-    // peripherals = true,
-    // TODO: Replace the `FreeInterrupt1, ...` with free interrupt vectors if software tasks are used
-    // You can usually find the names of the interrupt vectors in the some_hal::pac::interrupt enum.
-    dispatchers = [EXTI0],
+    dispatchers = [EXTI0, EXTI1],
 )]
 mod app {
 
@@ -75,9 +71,7 @@ mod app {
 
     // Local resources go here
     #[local]
-    struct Local {
-        // TODO: Add resources
-    }
+    struct Local {}
 
     #[init]
     fn init(mut cx: init::Context) -> (Shared, Local) {
@@ -111,7 +105,6 @@ mod app {
             .cfgr
             .lse(CrystalBypass::Disable, ClockSecuritySystem::Disable)
             .freeze(&mut flash.acr, &mut pwr);
-        // let clocks = rcc.cfgr.freeze(&mut flash.acr, &mut pwr);
 
         // Create SysTick monotonic for task scheduling
         Systick::start(cx.core.SYST, clocks.sysclk().raw(), create_systick_token!());
@@ -163,18 +156,18 @@ mod app {
 
         // Initialize UART for GPS
         let tx = gpioa
-            .pa9
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+            .pa2
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
         let rx = gpioa
-            .pa10
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
+            .pa3
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
 
-        let mut gps_uart = Serial::usart1(
-            cx.device.USART1,
+        let mut gps_uart = Serial::lpuart1(
+            cx.device.LPUART1,
             (tx, rx),
             Config::default().baudrate(9600.bps()),
             clocks,
-            &mut rcc.apb2,
+            &mut rcc.apb1r2,
         );
         gps_uart.listen(serial::Event::Rxne);
 
@@ -220,21 +213,16 @@ mod app {
                 display: SharpMemDisplay::new(spi1, cs),
                 gps: Gps::new(gps_uart),
             },
-            Local {
-                // Initialization of local resources go here
-                // count: 0
-            },
+            Local {},
         )
     }
 
-    // Optional idle, can be removed if not needed.
     #[idle]
     fn idle(_: idle::Context) -> ! {
         trace!("idle enter");
 
         loop {
-            // trace!("sleep");
-            // Only sleep in release mode, since the debugger doesn't interact with sleep very nice
+            // Only sleep in release mode, since the debugger doesn't interact with sleep very nicely
             #[cfg(debug_assertions)]
             core::hint::spin_loop();
             #[cfg(not(debug_assertions))]
@@ -291,7 +279,7 @@ mod app {
         }
     }
 
-    #[task(binds = USART1, priority = 10, shared = [gps])]
+    #[task(binds = LPUART1, priority = 10, shared = [gps])]
     fn on_uart(mut cx: on_uart::Context) {
         cx.shared.gps.lock(|gps| {
             gps.handle();
