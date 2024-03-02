@@ -66,14 +66,4 @@ opt-level = "s" # <-
 overflow-checks = false # <-
 
 [patch.crates-io]
-stm32l4xx-hal = { path = "./stm32l4xx-hal" }
-# ublox = { path = "./ublox/ublox" }
-# usb-device = { path = "./usb-device" }
-
-# uncomment this to switch from the crates.io version of defmt to its git version
-# check app-template's README for instructions
-# [patch.crates-io]
-# defmt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# defmt-rtt = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# defmt-test = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
-# panic-probe = { git = "https://github.com/knurling-rs/defmt", rev = "use defmt version supported by probe-rs (see changelog)" }
+stm32l4xx-hal = { path = "./lib/stm32l4xx-hal" }
