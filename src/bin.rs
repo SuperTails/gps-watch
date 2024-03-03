@@ -3,8 +3,12 @@
 #![feature(type_alias_impl_trait)]
 
 use gps_watch as _;
-use gps_watch::{gps::Gps, Abs as _, FmtBuf};
+use gps_watch::{
+    ubx::{UbxPacket, UbxParser},
+    Abs as _, FmtBuf, Position,
+};
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use core::{fmt::Write, num::Wrapping};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
@@ -26,7 +30,7 @@ use stm32l4xx_hal::{
     gpio::{Alternate, Output, PushPull, PA1, PA2, PA3, PB3, PB4, PB5},
     hal::spi::{Mode, Phase, Polarity},
     pac,
-    pac::{SPI1, LPUART1},
+    pac::{LPUART1, SPI1},
     prelude::*,
     rcc::{ClockSecuritySystem, CrystalBypass},
     rtc::{Event, Rtc, RtcClockSource, RtcConfig},
@@ -38,8 +42,8 @@ use tinyvec::ArrayVec;
 use u8g2_fonts::{fonts, FontRenderer};
 use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
+use chrono::prelude::*;
 
-// Rename type to squash generics
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     Spi<
         SPI1,
@@ -52,7 +56,11 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     PA1<Output<PushPull>>,
 >;
 
-type GpsUart = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
+type LpUart1 = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
+
+const UART_TX_BUF: usize = 16;
+const UART_RX_BUF: usize = 256;
+const USB_BUF: usize = 16;
 
 #[rtic::app(
     device = stm32l4xx_hal::pac,
@@ -66,12 +74,21 @@ mod app {
     #[shared]
     struct Shared {
         display: SharpMemDisplay,
-        gps: Gps<GpsUart>,
+        position: Position,
+        time: DateTime<Utc>,
     }
 
     // Local resources go here
     #[local]
-    struct Local {}
+    struct Local {
+        uart: LpUart1,
+        uart_rx_send: Sender<'static, u8, UART_RX_BUF>,
+        uart_tx_recv: Receiver<'static, u8, UART_TX_BUF>,
+    }
+
+    ////////////////////////////////////////////////////////////////////////////
+    // Main thread tasks ///////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////
 
     #[init]
     fn init(mut cx: init::Context) -> (Shared, Local) {
@@ -140,8 +157,6 @@ mod app {
             &mut rcc.apb2,
         );
 
-        // let display = SharpMemDisplay::new(spi1, cs);
-
         // Initialize RTC and interrupts
         let mut rtc = Rtc::rtc(
             cx.device.RTC,
@@ -162,18 +177,26 @@ mod app {
             .pa3
             .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
 
-        let mut gps_uart = Serial::lpuart1(
+        let mut uart = Serial::lpuart1(
             cx.device.LPUART1,
             (tx, rx),
             Config::default().baudrate(9600.bps()),
             clocks,
             &mut rcc.apb1r2,
         );
-        gps_uart.listen(serial::Event::Rxne);
+        uart.listen(serial::Event::Rxne);
+        uart.listen(serial::Event::Txe);
+
+        // Create channels for communicating between tasks and the UART interrupt
+        let (uart_rx_send, uart_rx_recv) = make_channel!(u8, UART_RX_BUF);
+        let (uart_tx_send, uart_tx_recv) = make_channel!(u8, UART_TX_BUF);
+
+        // Create GPS handler task
+        gps_task::spawn(uart_tx_send, uart_rx_recv).unwrap();
 
         // Enable the USB interrupt
         // let usb = unsafe {hal::pac::Peripherals::steal()}.USB;
-        // usb.cntr.write(|w| w.wkupm().enabled());
+        // usb.cntr.modify(|_, w| w.wkupm().enabled());
 
         // Initialize USB Serial
         let dm = gpioa
@@ -198,7 +221,7 @@ mod app {
             pin_dp: dp,
         };
 
-        let (usb_tx, usb_rx) = make_channel!(u8, 16);
+        let (usb_tx, usb_rx) = make_channel!(u8, USB_BUF);
         // Pass to task for remaining initialization
         let _ = usb_poll::spawn(usb, usb_rx);
 
@@ -211,9 +234,14 @@ mod app {
         (
             Shared {
                 display: SharpMemDisplay::new(spi1, cs),
-                gps: Gps::new(gps_uart),
+                position: Position::default(),
+                time: DateTime::default(),
             },
-            Local {},
+            Local {
+                uart,
+                uart_rx_send,
+                uart_tx_recv,
+            },
         )
     }
 
@@ -230,11 +258,221 @@ mod app {
         }
     }
 
+    ////////////////////////////////////////////////////////////////////////////
+    // Hardware interrupt handlers /////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////
+
+    // Transfer UART data to/from the buffers
+    #[task(binds = LPUART1, priority = 10, local = [uart, uart_rx_send, uart_tx_recv])]
+    fn on_uart(mut cx: on_uart::Context) {
+        trace!("on_uart enter");
+        // Rxne
+        if let Ok(b) = cx.local.uart.read() {
+            // If the recv buffer is full, then drop the received value
+            let _ = cx.local.uart_rx_send.try_send(b);
+        }
+        // Txe
+        if cx.local.uart.can_write() {
+            if let Ok(b) = cx.local.uart_tx_recv.try_recv() {
+                cx.local.uart.write(b).unwrap();
+            }
+        }
+    }
+
+    #[task(binds = RTC_WKUP)]
+    fn on_rtc(_cx: on_rtc::Context) {
+        info!("rtc wakeup!");
+    }
+
+    ////////////////////////////////////////////////////////////////////////////
+    // Periodic tasks //////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////
+
+    // Read GPS data
+    #[task(priority = 2, shared = [position, time])]
+    async fn gps_task(
+        mut cx: gps_task::Context,
+        mut uart_tx_send: Sender<'static, u8, UART_TX_BUF>,
+        mut uart_rx_recv: Receiver<'static, u8, UART_RX_BUF>,
+    ) {
+        trace!("gps_task enter");
+
+        // Configure GPS module
+        let packet = ublox::CfgPrtUartBuilder {
+            portid: ublox::UartPortId::Uart1,
+            reserved0: 0,
+            tx_ready: 0,
+            mode: ublox::UartMode::new(
+                ublox::DataBits::Eight,
+                ublox::Parity::None,
+                ublox::StopBits::One,
+            ),
+            baud_rate: 9600,
+            in_proto_mask: ublox::InProtoMask::UBLOX,
+            out_proto_mask: ublox::OutProtoMask::UBLOX,
+            flags: 0,
+            reserved5: 0,
+        }
+        .into_packet_bytes();
+
+        for b in packet {
+            uart_tx_send.send(b).await.unwrap();
+        }
+
+        let packet =
+            ublox::CfgMsgAllPortsBuilder::set_rate_for::<ublox::NavPvt>([1, 1, 1, 1, 1, 1])
+                .into_packet_bytes();
+
+        for b in packet {
+            uart_tx_send.send(b).await.unwrap();
+        }
+
+        let mut parser = UbxParser::new();
+
+        loop {
+            match parser.process_byte(uart_rx_recv.recv().await.unwrap()) {
+                Some(Ok(pkt)) => match pkt {
+                    UbxPacket::NavPvt(n) => {
+                        cx.shared.position.lock(|p| {
+                            p.lat = n.lat_degrees();
+                            p.lon = n.lon_degrees();
+                        });
+                        cx.shared.time.lock(|t| {
+                            *t = DateTime::from_naive_utc_and_offset(
+                                NaiveDateTime::new(
+                                    NaiveDate::from_ymd_opt(
+                                        n.year as i32,
+                                        n.month as u32,
+                                        n.day as u32,
+                                    )
+                                    .unwrap(),
+                                    NaiveTime::from_hms_nano_opt(
+                                        n.hour as u32,
+                                        n.min as u32,
+                                        n.sec as u32,
+                                        n.nano as u32,
+                                    )
+                                    .unwrap(),
+                                ),
+                                Utc,
+                            );
+                        });
+                    }
+                    _ => (),
+                },
+                Some(Err(e)) => error!("UBX error: {}", e),
+                None => (),
+            }
+        }
+    }
+
+    #[task(priority = 1, shared = [display, position, time])]
+    async fn display_task(mut cx: display_task::Context, _tx: Sender<'static, u8, USB_BUF>) {
+        trace!("display_task enter");
+        cx.shared.display.lock(|display| display.clear_flush());
+
+        let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
+
+        let mut i = Wrapping(0u8);
+        loop {
+            debug!("display_task loop");
+            // let mut dbg_txt = FmtBuf::<512>::new();
+            let mut time_buf = FmtBuf::<8>::new();
+            let mut coords_buf = FmtBuf::<64>::new();
+            let pos = cx.shared.position.lock(|p| *p);
+            let time = cx.shared.time.lock(|t| t.clone());
+            // let _ = write!(
+            //     dbg_txt,
+            //     "Debug Info:\nReceived {} bytes\nLast Packet: {:x?}",
+            //     count, last_packet
+            // );
+            write!(time_buf, "{}:{:02}", time.hour(), time.minute()).unwrap();
+
+            write!(
+                coords_buf,
+                "{:.4}°{}\n{:.4}°{}",
+                pos.lat.abs(),
+                if pos.lat >= 0.0 { 'N' } else { 'S' },
+                pos.lon.abs(),
+                if pos.lon >= 0.0 { 'E' } else { 'W' }
+            )
+            .unwrap();
+
+            cx.shared.display.lock(|display| {
+                display.clear();
+                // Debug infos
+                // TextBox::new(
+                //     dbg_txt.as_str().unwrap(),
+                //     Rectangle {
+                //         top_left: Point { x: 5, y: 135 },
+                //         size: Size {
+                //             width: 350,
+                //             height: 100,
+                //         },
+                //     },
+                //     MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                // )
+                // .draw(display)
+                // .unwrap();
+
+                // Watch UI
+                Rectangle {
+                    top_left: Point { x: 0, y: 0 },
+                    size: Size {
+                        width: 128,
+                        height: 128,
+                    },
+                }
+                .into_styled(
+                    PrimitiveStyleBuilder::new()
+                        .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
+                        .stroke_color(BinaryColor::On)
+                        .stroke_width(4)
+                        .build(),
+                )
+                .draw(display)
+                .unwrap();
+
+                clock_font
+                    .render_aligned(
+                        time_buf.as_str().unwrap(),
+                        Point { x: 64, y: 20 },
+                        u8g2_fonts::types::VerticalPosition::Top,
+                        u8g2_fonts::types::HorizontalAlignment::Center,
+                        u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
+                        display,
+                    )
+                    .unwrap();
+
+                Text::new(
+                    coords_buf.as_str().unwrap(),
+                    Point { x: 20, y: 80 },
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                )
+                .draw(display)
+                .unwrap();
+
+                display.flush();
+            });
+
+            // let stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 3);
+            // let rect_styled = Rectangle { top_left: Point {x: i.0 as i32, y: i.0 as i32}, size: Size { width: 20, height: 20 } }
+            //     .into_styled(stroke);
+            // cx.shared.display.lock(|display| {
+            //     rect_styled.draw(display).unwrap();
+            //     display.flush();
+            // });
+            Systick::delay(200.millis()).await;
+            i += 1;
+        }
+    }
+
+    // Poll USB
     #[task(priority = 1)]
     async fn usb_poll(
         _cx: usb_poll::Context,
         usb: hal::usb::Peripheral,
-        mut rx: Receiver<'static, u8, 16>,
+        mut rx: Receiver<'static, u8, USB_BUF>,
     ) {
         trace!("usb_poll enter");
 
@@ -276,142 +514,6 @@ mod app {
                 }
                 Err(_) => error!("usb error"),
             }
-        }
-    }
-
-    #[task(binds = LPUART1, priority = 10, shared = [gps])]
-    fn on_uart(mut cx: on_uart::Context) {
-        cx.shared.gps.lock(|gps| {
-            gps.handle();
-        });
-    }
-
-    // #[task(priority = 1, shared = [recv_buf])]
-    // async fn gps_status(mut cx: gps_status::Context) {
-    //     loop {
-    //         Systick::delay(1000.millis()).await;
-    //         cx.shared.recv_buf.lock(|x| {
-    //             info!("received: {:x}", x.as_slice());
-    //             x.clear();
-    //         });
-    //     }
-    // }
-
-    #[task(binds = RTC_WKUP)]
-    fn on_rtc(_cx: on_rtc::Context) {
-        info!("rtc wakeup!");
-    }
-
-    #[task(
-        priority = 1,
-        shared = [display, gps]
-    )]
-    async fn display_task(mut cx: display_task::Context, _tx: Sender<'static, u8, 16>) {
-        trace!("display_task enter");
-        cx.shared.display.lock(|display| display.clear_flush());
-
-        let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
-
-        let mut i = Wrapping(0u8);
-        loop {
-            debug!("display_task loop");
-            let mut dbg_txt = FmtBuf::<512>::new();
-            let mut time = FmtBuf::<8>::new();
-            let mut coords = FmtBuf::<64>::new();
-            let (last_navpvt, last_packet, count) = cx
-                .shared
-                .gps
-                .lock(|gps| (gps.last_navpvt, gps.last_packet, gps.count));
-            let _ = write!(
-                dbg_txt,
-                "Debug Info:\nReceived {} bytes\nLast Packet: {:x?}",
-                count, last_packet
-            );
-            if let Some(n) = last_navpvt {
-                write!(time, "{}:{:02}", n.hour - 5, n.min).unwrap();
-
-                let lat = n.lat_degrees();
-                let lon = n.lon_degrees();
-                write!(
-                    coords,
-                    "{:.4}°{}\n{:.4}°{}",
-                    lat.abs(),
-                    if lat >= 0.0 { 'N' } else { 'S' },
-                    lon.abs(),
-                    if lon >= 0.0 { 'E' } else { 'W' }
-                )
-                .unwrap();
-            } else {
-                write!(time, "10:10").unwrap();
-                write!(coords, "No Fix").unwrap();
-            }
-
-            cx.shared.display.lock(|display| {
-                display.clear();
-                // Debug infos
-                TextBox::new(
-                    dbg_txt.as_str().unwrap(),
-                    Rectangle {
-                        top_left: Point { x: 5, y: 135 },
-                        size: Size {
-                            width: 350,
-                            height: 100,
-                        },
-                    },
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
-                )
-                .draw(display)
-                .unwrap();
-
-                // Watch UI
-                Rectangle {
-                    top_left: Point { x: 0, y: 0 },
-                    size: Size {
-                        width: 128,
-                        height: 128,
-                    },
-                }
-                .into_styled(
-                    PrimitiveStyleBuilder::new()
-                        .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
-                        .stroke_color(BinaryColor::On)
-                        .stroke_width(4)
-                        .build(),
-                )
-                .draw(display)
-                .unwrap();
-
-                clock_font
-                    .render_aligned(
-                        time.as_str().unwrap(),
-                        Point { x: 64, y: 20 },
-                        u8g2_fonts::types::VerticalPosition::Top,
-                        u8g2_fonts::types::HorizontalAlignment::Center,
-                        u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
-                        display,
-                    )
-                    .unwrap();
-
-                Text::new(
-                    coords.as_str().unwrap(),
-                    Point { x: 20, y: 80 },
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
-                )
-                .draw(display)
-                .unwrap();
-
-                display.flush();
-            });
-
-            // let stroke = PrimitiveStyle::with_stroke(BinaryColor::On, 3);
-            // let rect_styled = Rectangle { top_left: Point {x: i.0 as i32, y: i.0 as i32}, size: Size { width: 20, height: 20 } }
-            //     .into_styled(stroke);
-            // cx.shared.display.lock(|display| {
-            //     rect_styled.draw(display).unwrap();
-            //     display.flush();
-            // });
-            Systick::delay(200.millis()).await;
-            i += 1;
         }
     }
 }

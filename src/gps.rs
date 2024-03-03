@@ -1,11 +1,9 @@
-use defmt::trace;
-use stm32l4xx_hal::hal::serial;
+/*use defmt::trace;
 use ublox::{CfgMsgAllPortsBuilder, CfgPrtUartBuilder, NavPvt as TxNavPvt, UartMode, UartPortId};
 
 use crate::ubx::{NavPvt, UbxError, UbxPacket, UbxParser};
 
-pub struct Gps<SERIAL> {
-    pub serial: SERIAL,
+pub struct Gps {
     pub parser: UbxParser,
 
     pub last_packet: Option<Result<UbxPacket, UbxError>>,
@@ -13,18 +11,12 @@ pub struct Gps<SERIAL> {
     pub count: usize,
 }
 
-impl<SERIAL> Gps<SERIAL>
-where
-    SERIAL: serial::Read<u8> + serial::Write<u8>,
-    <SERIAL as serial::Read<u8>>::Error: core::fmt::Debug,
-    <SERIAL as serial::Write<u8>>::Error: core::fmt::Debug,
-{
+impl Gps {
     pub fn new(mut serial: SERIAL) -> Self {
         // Busy loop waiting for the GPS to be alive
         while let Err(_) = serial.read() {}
 
         let mut s = Self {
-            serial,
             parser: UbxParser::new(),
             last_packet: None,
             last_navpvt: None,
@@ -79,3 +71,4 @@ where
         }
     }
 }
+*/

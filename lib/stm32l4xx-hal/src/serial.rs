@@ -22,6 +22,7 @@ use crate::pac;
 use crate::rcc::{Clocks, Enable, RccBus, Reset};
 use crate::time::{Bps, U32Ext};
 
+// BEGIN LANDHOPPER CHANGES
 // #[cfg(any(
 //     //feature = "stm32l451", // missing PAC support
 //     // feature = "stm32l452", // missing PAC support
@@ -42,6 +43,7 @@ use crate::time::{Bps, U32Ext};
 //     feature = "stm32l4r9",
 //     feature = "stm32l4s9",
 // ))]
+// END LANHOPPER CHANGES
 use crate::dma::dma2;
 
 /// Interrupt event
@@ -443,6 +445,22 @@ macro_rules! hal {
                 pub fn release(self) -> (pac::$USARTX, PINS) {
                     (self.usart, self.pins)
                 }
+
+                // BEGIN LANDHOPPER CHANGES
+                pub fn can_read(&self) -> bool {
+                    let rx: Rx<pac::$USARTX> = Rx {
+                        _usart: PhantomData,
+                    };
+                    rx.can_read()
+                }
+
+                pub fn can_write(&self) -> bool {
+                    let tx: Tx<pac::$USARTX> = Tx {
+                        _usart: PhantomData,
+                    };
+                    tx.can_write()
+                }
+                // END LANDHOPPER CHANGES
             }
 
             impl<PINS> serial::Read<u8> for Serial<pac::$USARTX, PINS> {
@@ -651,6 +669,12 @@ macro_rules! hal {
                         false
                     }
                 }
+
+                // BEGIN LANDHOPPER CHANGES
+                pub fn can_read(&self) -> bool {
+                    unsafe { &(*pac::$USARTX::ptr()).isr.read() }.rxne().bit_is_set()
+                }
+                // END LANDHOPPER CHANGES
             }
 
             impl crate::dma::CharacterMatch for Rx<pac::$USARTX> {
@@ -680,6 +704,12 @@ macro_rules! hal {
                         channel,
                     }
                 }
+
+                // BEGIN LANDHOPPER CHANGES
+                pub fn can_write(&self) -> bool {
+                    unsafe { &(*pac::$USARTX::ptr()).isr.read() }.txe().bit_is_set()
+                }
+                // END LANDHOPPER CHANGES
             }
 
             impl $rxdma {
@@ -901,6 +931,7 @@ hal! {
     UART5: (uart5, pclk1, tx: (TxDma5, dma2::C1, DmaInput::Uart5Tx), rx: (RxDma5, dma2::C2, DmaInput::Uart5Rx)),
 }
 
+// BEGIN LANDHOPPER CHANGES
 macro_rules! lpuart_hal {
     ($(
         $(#[$meta:meta])*
@@ -1117,6 +1148,20 @@ macro_rules! lpuart_hal {
                 pub fn release(self) -> (pac::$USARTX, PINS) {
                     (self.usart, self.pins)
                 }
+
+                pub fn can_read(&self) -> bool {
+                    let rx: Rx<pac::$USARTX> = Rx {
+                        _usart: PhantomData,
+                    };
+                    rx.can_read()
+                }
+
+                pub fn can_write(&self) -> bool {
+                    let tx: Tx<pac::$USARTX> = Tx {
+                        _usart: PhantomData,
+                    };
+                    tx.can_write()
+                }
             }
 
             impl<PINS> serial::Read<u8> for Serial<pac::$USARTX, PINS> {
@@ -1309,6 +1354,10 @@ macro_rules! lpuart_hal {
                         false
                     }
                 }
+
+                pub fn can_read(&self) -> bool {
+                    unsafe { &(*pac::$USARTX::ptr()).isr.read() }.rxne().bit_is_set()
+                }
             }
 
             impl crate::dma::CharacterMatch for Rx<pac::$USARTX> {
@@ -1331,6 +1380,10 @@ macro_rules! lpuart_hal {
                         payload: self,
                         channel,
                     }
+                }
+
+                pub fn can_write(&self) -> bool {
+                    unsafe { &(*pac::$USARTX::ptr()).isr.read() }.txe().bit_is_set()
                 }
             }
 
@@ -1501,6 +1554,7 @@ macro_rules! lpuart_hal {
 lpuart_hal! {
     LPUART1: (lpuart1, pclk1, tx: (TxDmaLp1, dma2::C6, DmaInput::LpUart1Tx), rx: (RxDmaLp1, dma2::C7, DmaInput::LpUart1Rx)),
 }
+// END LANDHOPPER CHANGES
 
 impl<USART, PINS> fmt::Write for Serial<USART, PINS>
 where
@@ -1693,6 +1747,7 @@ impl_pin_traits! {
     }
 }
 
+// BEGIN LANDHOPPER CHANGES
 impl_pin_traits! {
     LPUART1: {
         8: {
@@ -1704,6 +1759,7 @@ impl_pin_traits! {
 
     }
 }
+// END LANDHOPPER CHANGES
 
 /// Pins trait for detecting hardware flow control or RS485 mode.
 pub trait Pins<USART> {

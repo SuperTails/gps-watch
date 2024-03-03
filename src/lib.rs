@@ -70,3 +70,9 @@ impl Abs for f32 {
         f32::from_bits(self.to_bits() & 0x7fff_ffff)
     }
 }
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct Position {
+    pub lat: f32,
+    pub lon: f32,
+}

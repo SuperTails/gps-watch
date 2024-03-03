@@ -77,7 +77,9 @@ macro_rules! hal {
                     spi: $SPIX,
                     pins: (SCK, MISO, MOSI),
                     mode: Mode,
+                    // BEGIN LANDHOPPER CHANGES
                     lsbfirst: bool,
+                    // END LANDHOPPER CHANGES
                     freq: Hertz,
                     clocks: Clocks,
                     apb2: &mut <$SPIX as RccBus>::Bus,
@@ -123,8 +125,10 @@ macro_rules! hal {
                             .bits(br)
                             .spe()
                             .set_bit()
+                            // BEGIN LANDHOPPER CHANGES
                             .lsbfirst()
                             .bit(lsbfirst)
+                            // END LANDHOPPER CHANGES
                             .ssi()
                             .set_bit()
                             .ssm()
@@ -142,7 +146,9 @@ macro_rules! hal {
                     spi: $SPIX,
                     pins: (SCK, MISO, MOSI),
                     mode: Mode,
+                    // BEGIN LANDHOPPER CHANGES
                     lsbfirst: bool,
+                    // END LANDHOPPER CHANGES
                     apb2: &mut <$SPIX as RccBus>::Bus
                 ) -> Self
                 where
@@ -169,8 +175,10 @@ macro_rules! hal {
                             .bit(mode.phase == Phase::CaptureOnSecondTransition)
                             .bidimode()
                             .clear_bit()
+                            // BEGIN LANDHOPPER CHANGES
                             .lsbfirst()
                             .bit(lsbfirst)
+                            // END LANDHOPPER CHANGES
                             .crcen()
                             .clear_bit()
                             .ssm()
