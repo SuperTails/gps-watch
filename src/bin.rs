@@ -4,11 +4,12 @@
 
 use gps_watch as _;
 use gps_watch::{
-    ubx::{UbxPacket, UbxParser},
+    ubx::{ParsedPacket, UbxParser, SendablePacket, cfg},
     Abs as _, FmtBuf, Position,
 };
+use gps_watch::ubx::packets::CfgValSet;
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{prelude::*, DateTime, Utc};
 use core::{fmt::Write, num::Wrapping};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
@@ -18,7 +19,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
-use embedded_text::TextBox;
+use hal::pac::Interrupt;
 use rtic_monotonics::{create_systick_token, systick::Systick};
 use rtic_sync::{
     channel::{Receiver, Sender},
@@ -42,7 +43,6 @@ use tinyvec::ArrayVec;
 use u8g2_fonts::{fonts, FontRenderer};
 use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
-use chrono::prelude::*;
 
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     Spi<
@@ -264,7 +264,7 @@ mod app {
 
     // Transfer UART data to/from the buffers
     #[task(binds = LPUART1, priority = 10, local = [uart, uart_rx_send, uart_tx_recv])]
-    fn on_uart(mut cx: on_uart::Context) {
+    fn on_uart(cx: on_uart::Context) {
         trace!("on_uart enter");
         // Rxne
         if let Ok(b) = cx.local.uart.read() {
@@ -297,34 +297,19 @@ mod app {
     ) {
         trace!("gps_task enter");
 
-        // Configure GPS module
-        let packet = ublox::CfgPrtUartBuilder {
-            portid: ublox::UartPortId::Uart1,
-            reserved0: 0,
-            tx_ready: 0,
-            mode: ublox::UartMode::new(
-                ublox::DataBits::Eight,
-                ublox::Parity::None,
-                ublox::StopBits::One,
-            ),
-            baud_rate: 9600,
-            in_proto_mask: ublox::InProtoMask::UBLOX,
-            out_proto_mask: ublox::OutProtoMask::UBLOX,
-            flags: 0,
-            reserved5: 0,
-        }
-        .into_packet_bytes();
-
-        for b in packet {
+        let packet = CfgValSet {
+            ram: true,
+            bbr: true,
+            flash: false,
+            items: [
+                (cfg::CFG_UART1OUTPROT_UBX, true).into(),
+                (cfg::CFG_UART1OUTPROT_NMEA, false).into(),
+                (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 1_u8).into(),
+            ]
+        };
+        for b in packet.to_bytes() {
             uart_tx_send.send(b).await.unwrap();
-        }
-
-        let packet =
-            ublox::CfgMsgAllPortsBuilder::set_rate_for::<ublox::NavPvt>([1, 1, 1, 1, 1, 1])
-                .into_packet_bytes();
-
-        for b in packet {
-            uart_tx_send.send(b).await.unwrap();
+            rtic::pend(Interrupt::LPUART1);
         }
 
         let mut parser = UbxParser::new();
@@ -332,31 +317,9 @@ mod app {
         loop {
             match parser.process_byte(uart_rx_recv.recv().await.unwrap()) {
                 Some(Ok(pkt)) => match pkt {
-                    UbxPacket::NavPvt(n) => {
-                        cx.shared.position.lock(|p| {
-                            p.lat = n.lat_degrees();
-                            p.lon = n.lon_degrees();
-                        });
-                        cx.shared.time.lock(|t| {
-                            *t = DateTime::from_naive_utc_and_offset(
-                                NaiveDateTime::new(
-                                    NaiveDate::from_ymd_opt(
-                                        n.year as i32,
-                                        n.month as u32,
-                                        n.day as u32,
-                                    )
-                                    .unwrap(),
-                                    NaiveTime::from_hms_nano_opt(
-                                        n.hour as u32,
-                                        n.min as u32,
-                                        n.sec as u32,
-                                        n.nano as u32,
-                                    )
-                                    .unwrap(),
-                                ),
-                                Utc,
-                            );
-                        });
+                    ParsedPacket::NavPvt(n) => {
+                        cx.shared.position.lock(|p| *p = n.position());
+                        cx.shared.time.lock(|t| *t = n.datetime());
                     }
                     _ => (),
                 },

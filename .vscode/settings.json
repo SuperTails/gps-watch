@@ -2,6 +2,8 @@
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.check.extraArgs": [
         "--target",
-        "thumbv7em-none-eabi"
-    ]
+        "thumbv7em-none-eabihf"
+    ],
+    "rust-analyzer.check.targets": ["thumbv7em-none-eabihf"]
+    // "rust-analyzer.nightly"
 }

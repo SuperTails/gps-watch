@@ -51,18 +51,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
-name = "bitflags"
-version = "2.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed570934406eb16438a4e976b1b4500774099c13b8cb96eec99f620f05090ddf"
-
-[[package]]
 name = "bxcan"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b13b4b2ea9ab2ba924063ebb86ad895cb79f4a79bf90f27949eb20c335b30f9"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags",
  "nb 1.1.0",
  "vcell",
 ]
@@ -162,7 +156,7 @@ version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3939552907426de152b3c2c6f51ed53f98f448babd26f28694c95f5906194595"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags",
  "defmt-macros",
 ]
 
@@ -352,7 +346,6 @@ dependencies = [
  "thiserror-core",
  "tinyvec",
  "u8g2-fonts",
- "ublox",
  "usb-device",
  "usbd-serial",
 ]
@@ -747,29 +740,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a68775e2131c88974e3cc1da37060559090319ea140746cc1e7e7797646415c0"
 dependencies = [
  "embedded-graphics-core",
-]
-
-[[package]]
-name = "ublox"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad0c3df1bc466bd97f94ab437aab9116d5c15909c8a5cb9905ee3c11df998e8"
-dependencies = [
- "bitflags 2.4.2",
- "chrono",
- "num-traits",
- "ublox_derive",
-]
-
-[[package]]
-name = "ublox_derive"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea60f23c86d2329b7162f6ebb82854bc77b992a9984e1fdfe8707f88e0e3e69"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]

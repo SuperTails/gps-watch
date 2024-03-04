@@ -1,20 +1,17 @@
 #![no_main]
 #![no_std]
+#![feature(impl_trait_in_assoc_type)]
+
+use defmt_brtt as _; // import + register global logger
+use panic_probe as _; // import + register panic handler
 
 use core::{
     fmt::{self, Write},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use defmt_brtt as _; // global logger
-
-use panic_probe as _;
-
-// TODO(6) Import your HAL
-use stm32l4xx_hal as _;
-use tinyvec::ArrayVec; // memory layout
+use tinyvec::ArrayVec;
 
 pub mod display;
-pub mod gps;
 pub mod ubx;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
@@ -24,6 +21,7 @@ fn panic() -> ! {
     cortex_m::asm::udf()
 }
 
+// Incrementing timestamp for Defmt printouts
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 defmt::timestamp!("{=usize}", {
     // NOTE(no-CAS) `timestamps` runs with interrupts disabled

@@ -19,7 +19,6 @@ rtic-monotonics = { version = "1.0.0", features = ["cortex-m-systick", "systick-
 thiserror = { version = "1.0.50", package = "thiserror-core", default-features = false }
 embedded-graphics = "0.8.1"
 tinyvec = { version = "1.6.0", features = ["rustc_1_55"] }
-ublox = { version = "0.4.5", default-features = false }
 nb = "1.1.0"
 bytemuck = { version = "1.14.3", features = ["derive"] }
 stm32-usbd = "0.6.0"
