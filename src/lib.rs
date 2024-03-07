@@ -58,7 +58,7 @@ impl<const N: usize> FmtBuf<N> {
     }
 }
 
-// This isn't in core for some reason, so do this to avoid pulling in a dependency
+// This isn't in core for some reason, so do this to avoid pulling in libm as a dependency
 pub trait Abs {
     fn abs(self) -> Self;
 }

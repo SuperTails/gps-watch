@@ -1,6 +1,6 @@
+use crate::Position;
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use crate::Position;
 
 use super::{cfg::CfgItem, generator::SendablePacket};
 
@@ -97,26 +97,25 @@ pub struct CfgValSet<const N: usize> {
     pub ram: bool,
     pub bbr: bool,
     pub flash: bool,
-    pub items: [CfgItem; N]
+    pub items: [CfgItem; N],
 }
 
 impl<const N: usize> CfgValSet<N> {
     pub fn layers(&self) -> u8 {
-        (if self.ram   { 1 << 0 } else { 0 }) |
-        (if self.bbr   { 1 << 1 } else { 0 }) |
-        (if self.flash { 1 << 2 } else { 0 })
+        (if self.ram { 1 << 0 } else { 0 })
+            | (if self.bbr { 1 << 1 } else { 0 })
+            | (if self.flash { 1 << 2 } else { 0 })
     }
 }
 
 impl<const N: usize> SendablePacket for CfgValSet<N> {
-    // type I = Chain<IntoIter<u8, N>, FlatMap<core::slice::Iter>;
-    type I = impl Iterator<Item=u8>;
+    type I = impl Iterator<Item = u8>;
 
     fn class(&self) -> u8 {
         0x06
     }
 
-    fn id (&self) -> u8 {
+    fn id(&self) -> u8 {
         0x8a
     }
 

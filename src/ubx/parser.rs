@@ -1,5 +1,6 @@
 use super::{packets::NavPvt, UbxBuf, UbxChecksum, UbxError, UBX_BUF_SIZE};
 
+// States are named for the portion of the packet which was *last received*
 #[derive(Copy, Clone)]
 enum ParserState {
     Start,
@@ -62,7 +63,6 @@ impl UbxParser {
                     None
                 } else {
                     self.state = Start;
-                    // Some(Err(BadStart {expect: 0xb5, saw: b}))
                     None
                 }
             }
@@ -74,10 +74,7 @@ impl UbxParser {
                     None
                 } else {
                     self.state = Start;
-                    Some(Err(UbxError::BadStart {
-                        expect: 0x62,
-                        saw: b,
-                    }))
+                    None
                 }
             }
             Sync2 => {

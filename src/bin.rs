@@ -4,10 +4,9 @@
 
 use gps_watch as _;
 use gps_watch::{
-    ubx::{ParsedPacket, UbxParser, SendablePacket, cfg},
+    ubx::{cfg, packets::CfgValSet, ParsedPacket, SendablePacket, UbxParser},
     Abs as _, FmtBuf, Position,
 };
-use gps_watch::ubx::packets::CfgValSet;
 
 use chrono::{prelude::*, DateTime, Utc};
 use core::{fmt::Write, num::Wrapping};
@@ -302,10 +301,23 @@ mod app {
             bbr: true,
             flash: false,
             items: [
+                // Leave UART settings at default (if we're connected they already work)
+                // Use UBX only
                 (cfg::CFG_UART1OUTPROT_UBX, true).into(),
                 (cfg::CFG_UART1OUTPROT_NMEA, false).into(),
+                // Send NAV-PVT packets every second (minimum rate)
                 (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 1_u8).into(),
-            ]
+                // PSMOO power save mode (turn off after getting signal)
+                (cfg::CFG_PM_OPERATEMODE, cfg::OPERATEMODE_PSMOO).into(),
+                // Only stay on for 10 seconds after acquiring signal
+                (cfg::CFG_PM_ONTIME, 10_u8).into(),
+                // Hold EXTINT low to force off, when GPS not needed
+                (cfg::CFG_PM_EXTINTBACKUP, true).into(),
+                // Wait for a Time fix before starting ONTIME timeout
+                (cfg::CFG_PM_WAITTIMEFIX, true).into(),
+                // Make sure the ephemeris stays up to date
+                (cfg::CFG_PM_UPDATEEPH, true).into(),
+            ],
         };
         for b in packet.to_bytes() {
             uart_tx_send.send(b).await.unwrap();

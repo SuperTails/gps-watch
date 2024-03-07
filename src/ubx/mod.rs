@@ -1,14 +1,12 @@
-
 use tinyvec::ArrayVec;
 
-pub mod parser;
-pub mod packets;
-pub mod generator;
 pub mod cfg;
+pub mod generator;
+pub mod packets;
+pub mod parser;
 
-pub use parser::UbxParser;
-pub use parser::ParsedPacket;
 pub use generator::SendablePacket;
+pub use parser::{ParsedPacket, UbxParser};
 
 const UBX_BUF_SIZE: usize = 256;
 type UbxBuf = ArrayVec<[u8; UBX_BUF_SIZE]>;
@@ -36,7 +34,6 @@ impl PartialEq<(u8, u8)> for UbxChecksum {
 #[derive(defmt::Format, Debug, Copy, Clone)]
 pub enum UbxError {
     BadChecksum { expect: (u8, u8), saw: (u8, u8) },
-    BadStart { expect: u8, saw: u8 },
     BadPayload,
     TooLarge(u16),
 }
