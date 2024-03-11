@@ -151,6 +151,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7059fff8937831a9ae6f0fe4d658ffabf58f2ca96aa9dec1c889f936f705f216"
 
 [[package]]
+name = "crossbeam-utils"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
+
+[[package]]
 name = "defmt"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -338,6 +344,7 @@ dependencies = [
  "embedded-text",
  "nb 1.1.0",
  "panic-probe",
+ "ringbuf",
  "rtic",
  "rtic-monotonics",
  "rtic-sync",
@@ -496,6 +503,14 @@ name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
+name = "ringbuf"
+version = "0.4.0-rc.4"
+source = "git+https://gitlab.com/agerasev/ringbuf#7936744b2dc7787e4290ab9dfe2fc0d6b144b27a"
+dependencies = [
+ "crossbeam-utils",
+]
 
 [[package]]
 name = "rtic"

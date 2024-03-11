@@ -1,4 +1,4 @@
-use super::{packets::NavPvt, UbxBuf, UbxChecksum, UbxError, UBX_BUF_SIZE};
+use super::{packets::NavPvt, UbxBuf, UbxChecksum, UbxError, UBX_BUFSIZE};
 
 // States are named for the portion of the packet which was *last received*
 #[derive(Copy, Clone)]
@@ -51,7 +51,7 @@ impl UbxParser {
     pub fn new() -> Self {
         Self {
             state: Start,
-            buf: UbxBuf::new(),
+            buf: UbxBuf::default(),
         }
     }
 
@@ -112,7 +112,7 @@ impl UbxParser {
                 checksum,
             } => {
                 let len = (b as u16) << 8 | (len1 as u16);
-                if len as usize > UBX_BUF_SIZE {
+                if len as usize > UBX_BUFSIZE {
                     self.state = Start;
                     Some(Err(UbxError::TooLarge(len)))
                 } else {
@@ -217,7 +217,7 @@ impl UbxParser {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(defmt::Format, Debug, Copy, Clone)]
 pub enum ParsedPacket {
     AckAck { class: u8, id: u8 },
     AckNak { class: u8, id: u8 },

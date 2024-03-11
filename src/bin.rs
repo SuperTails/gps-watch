@@ -19,11 +19,8 @@ use embedded_graphics::{
     text::Text,
 };
 use hal::pac::Interrupt;
+use ringbuf::{traits::*, StaticCons, StaticProd, StaticRb};
 use rtic_monotonics::{create_systick_token, systick::Systick};
-use rtic_sync::{
-    channel::{Receiver, Sender},
-    make_channel,
-};
 use stm32_usbd::UsbBus;
 use stm32l4xx_hal::{
     self as hal,
@@ -57,9 +54,15 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
 
 type LpUart1 = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
 
-const UART_TX_BUF: usize = 16;
-const UART_RX_BUF: usize = 256;
-const USB_BUF: usize = 16;
+struct UartStuff {
+    uart: LpUart1,
+    rx_send: StaticProd<'static, u8, UART_RX_BUFSIZE>,
+    tx_recv: StaticCons<'static, u8, UART_TX_BUFSIZE>,
+}
+
+const UART_TX_BUFSIZE: usize = 16;
+const UART_RX_BUFSIZE: usize = 256;
+const USB_BUFSIZE: usize = 16;
 
 #[rtic::app(
     device = stm32l4xx_hal::pac,
@@ -80,9 +83,7 @@ mod app {
     // Local resources go here
     #[local]
     struct Local {
-        uart: LpUart1,
-        uart_rx_send: Sender<'static, u8, UART_RX_BUF>,
-        uart_tx_recv: Receiver<'static, u8, UART_TX_BUF>,
+        uart: UartStuff,
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -184,14 +185,25 @@ mod app {
             &mut rcc.apb1r2,
         );
         uart.listen(serial::Event::Rxne);
-        uart.listen(serial::Event::Txe);
 
         // Create channels for communicating between tasks and the UART interrupt
-        let (uart_rx_send, uart_rx_recv) = make_channel!(u8, UART_RX_BUF);
-        let (uart_tx_send, uart_tx_recv) = make_channel!(u8, UART_TX_BUF);
+        static mut UART_RX: StaticRb<u8, UART_RX_BUFSIZE> = StaticRb::new();
+        // SAFETY: this is the only time UART_RX is accessed
+        let (uart_rx_send, uart_rx_recv) = unsafe { UART_RX.split_ref() };
+        static mut UART_TX: StaticRb<u8, UART_TX_BUFSIZE> = StaticRb::new();
+        // SAFETY: this is the only time UART_TX is accessed
+        let (uart_tx_send, uart_tx_recv) = unsafe { UART_TX.split_ref() };
 
         // Create GPS handler task
-        gps_task::spawn(uart_tx_send, uart_rx_recv).unwrap();
+        let Ok(_) = gps_task::spawn(uart_tx_send, uart_rx_recv) else {
+            panic!()
+        };
+
+        let uart = UartStuff {
+            uart,
+            rx_send: uart_rx_send,
+            tx_recv: uart_tx_recv,
+        };
 
         // Enable the USB interrupt
         // let usb = unsafe {hal::pac::Peripherals::steal()}.USB;
@@ -220,12 +232,17 @@ mod app {
             pin_dp: dp,
         };
 
-        let (usb_tx, usb_rx) = make_channel!(u8, USB_BUF);
+        static mut USB_RX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
+        // SAFETY: this is the only time USB_RX is accessed
+        let (usb_rx_send, _usb_rx_recv) = unsafe { USB_RX.split_ref() };
+        static mut USB_TX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
+        // SAFETY: this is the only time USB_TX is accessed
+        let (_usb_tx_send, usb_tx_recv) = unsafe { USB_TX.split_ref() };
         // Pass to task for remaining initialization
-        let _ = usb_poll::spawn(usb, usb_rx);
+        let _ = usb_poll::spawn(usb, usb_tx_recv, usb_rx_send);
 
         // Spawn tasks
-        display_task::spawn(usb_tx.clone()).unwrap();
+        display_task::spawn().unwrap();
         // gps_status::spawn().unwrap();
 
         info!("done initializing!");
@@ -236,11 +253,7 @@ mod app {
                 position: Position::default(),
                 time: DateTime::default(),
             },
-            Local {
-                uart,
-                uart_rx_send,
-                uart_tx_recv,
-            },
+            Local { uart },
         )
     }
 
@@ -262,18 +275,23 @@ mod app {
     ////////////////////////////////////////////////////////////////////////////
 
     // Transfer UART data to/from the buffers
-    #[task(binds = LPUART1, priority = 10, local = [uart, uart_rx_send, uart_tx_recv])]
+    #[task(binds = LPUART1, priority = 10, local = [uart])]
     fn on_uart(cx: on_uart::Context) {
         trace!("on_uart enter");
         // Rxne
-        if let Ok(b) = cx.local.uart.read() {
+        if let Ok(b) = cx.local.uart.uart.read() {
             // If the recv buffer is full, then drop the received value
-            let _ = cx.local.uart_rx_send.try_send(b);
+            let _ = cx.local.uart.rx_send.try_push(b);
         }
         // Txe
-        if cx.local.uart.can_write() {
-            if let Ok(b) = cx.local.uart_tx_recv.try_recv() {
-                cx.local.uart.write(b).unwrap();
+        if cx.local.uart.uart.can_write() {
+            if let Some(b) = cx.local.uart.tx_recv.try_pop() {
+                cx.local.uart.uart.write(b).unwrap();
+            }
+            if !cx.local.uart.tx_recv.is_empty() {
+                cx.local.uart.uart.listen(serial::Event::Txe);
+            } else {
+                cx.local.uart.uart.unlisten(serial::Event::Txe);
             }
         }
     }
@@ -291,8 +309,8 @@ mod app {
     #[task(priority = 2, shared = [position, time])]
     async fn gps_task(
         mut cx: gps_task::Context,
-        mut uart_tx_send: Sender<'static, u8, UART_TX_BUF>,
-        mut uart_rx_recv: Receiver<'static, u8, UART_RX_BUF>,
+        mut uart_tx_send: StaticProd<'static, u8, UART_TX_BUFSIZE>,
+        mut uart_rx_recv: StaticCons<'static, u8, UART_RX_BUFSIZE>,
     ) {
         trace!("gps_task enter");
 
@@ -305,44 +323,63 @@ mod app {
                 // Use UBX only
                 (cfg::CFG_UART1OUTPROT_UBX, true).into(),
                 (cfg::CFG_UART1OUTPROT_NMEA, false).into(),
-                // Send NAV-PVT packets every second (minimum rate)
-                (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 1_u8).into(),
+                // Send NAV-PVT packets every 2 seconds
+                (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 4_u8).into(),
                 // PSMOO power save mode (turn off after getting signal)
                 (cfg::CFG_PM_OPERATEMODE, cfg::OPERATEMODE_PSMOO).into(),
                 // Only stay on for 10 seconds after acquiring signal
-                (cfg::CFG_PM_ONTIME, 10_u8).into(),
+                (cfg::CFG_PM_ONTIME, 10_u16).into(),
                 // Hold EXTINT low to force off, when GPS not needed
                 (cfg::CFG_PM_EXTINTBACKUP, true).into(),
                 // Wait for a Time fix before starting ONTIME timeout
                 (cfg::CFG_PM_WAITTIMEFIX, true).into(),
                 // Make sure the ephemeris stays up to date
                 (cfg::CFG_PM_UPDATEEPH, true).into(),
+                // Use the "wrist-worn" dynamic model
+                (cfg::CFG_NAVSPG_DYNMODEL, cfg::DYNMODEL_WRIST).into(),
+                // Measure GPS once every 2 seconds and get a nav solution
+                // (cfg::CFG_RATE_MEAS, 2000_u16).into(),
+                // (cfg::CFG_RATE_NAV, 1_u16).into(),
             ],
         };
-        for b in packet.to_bytes() {
-            uart_tx_send.send(b).await.unwrap();
+
+        let mut iter = packet.to_bytes();
+        loop {
+            // Push as many bytes as we can
+            uart_tx_send.push_iter(&mut iter);
+            // If we're done sending then we're done
+            if iter.done() {
+                break;
+            }
+            // Pend the uart interrupt to make sure stuff gets sent
             rtic::pend(Interrupt::LPUART1);
         }
 
         let mut parser = UbxParser::new();
-
         loop {
-            match parser.process_byte(uart_rx_recv.recv().await.unwrap()) {
-                Some(Ok(pkt)) => match pkt {
-                    ParsedPacket::NavPvt(n) => {
-                        cx.shared.position.lock(|p| *p = n.position());
-                        cx.shared.time.lock(|t| *t = n.datetime());
+            if let Some(b) = uart_rx_recv.try_pop() {
+                match parser.process_byte(b) {
+                    Some(Ok(pkt)) => {
+                        info!("Got packet: {}", pkt);
+                        match pkt {
+                            ParsedPacket::NavPvt(n) => {
+                                cx.shared.position.lock(|p| *p = n.position());
+                                cx.shared.time.lock(|t| *t = n.datetime());
+                            }
+                            _ => (),
+                        }
                     }
-                    _ => (),
-                },
-                Some(Err(e)) => error!("UBX error: {}", e),
-                None => (),
+                    Some(Err(e)) => error!("UBX error: {}", e),
+                    None => (),
+                }
+            } else {
+                Systick::delay(10.millis()).await;
             }
         }
     }
 
     #[task(priority = 1, shared = [display, position, time])]
-    async fn display_task(mut cx: display_task::Context, _tx: Sender<'static, u8, USB_BUF>) {
+    async fn display_task(mut cx: display_task::Context) {
         trace!("display_task enter");
         cx.shared.display.lock(|display| display.clear_flush());
 
@@ -355,7 +392,7 @@ mod app {
             let mut time_buf = FmtBuf::<8>::new();
             let mut coords_buf = FmtBuf::<64>::new();
             let pos = cx.shared.position.lock(|p| *p);
-            let time = cx.shared.time.lock(|t| t.clone());
+            let time = cx.shared.time.lock(|t| *t);
             // let _ = write!(
             //     dbg_txt,
             //     "Debug Info:\nReceived {} bytes\nLast Packet: {:x?}",
@@ -447,7 +484,8 @@ mod app {
     async fn usb_poll(
         _cx: usb_poll::Context,
         usb: hal::usb::Peripheral,
-        mut rx: Receiver<'static, u8, USB_BUF>,
+        mut tx_recv: StaticCons<'static, u8, USB_BUFSIZE>,
+        _rx_send: StaticProd<'static, u8, USB_BUFSIZE>,
     ) {
         trace!("usb_poll enter");
 
@@ -470,7 +508,7 @@ mod app {
             debug!("usb_poll loop");
 
             while tx_buf.len() < tx_buf.capacity() {
-                if let Ok(b) = rx.try_recv() {
+                if let Some(b) = tx_recv.try_pop() {
                     tx_buf.push(b);
                 } else {
                     break;

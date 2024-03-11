@@ -8,8 +8,29 @@ pub mod parser;
 pub use generator::SendablePacket;
 pub use parser::{ParsedPacket, UbxParser};
 
-const UBX_BUF_SIZE: usize = 256;
-type UbxBuf = ArrayVec<[u8; UBX_BUF_SIZE]>;
+const UBX_BUFSIZE: usize = 256;
+#[derive(Default, Debug, Copy, Clone)]
+pub struct UbxBuf(pub ArrayVec<[u8; UBX_BUFSIZE]>);
+
+impl defmt::Format for UbxBuf {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "{}", self.0.as_slice())
+    }
+}
+
+impl core::ops::Deref for UbxBuf {
+    type Target = ArrayVec<[u8; UBX_BUFSIZE]>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for UbxBuf {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct UbxChecksum(pub u8, pub u8);

@@ -14,6 +14,10 @@ pub trait SendablePacket {
     {
         UbxGenerator(Some(GeneratorState::Sync1 { packet: self }))
     }
+
+    fn packet_len(&self) -> usize {
+        8 + self.payload_len()
+    }
 }
 
 // States are named for the portion of the packet which is *about to be sent*
@@ -36,6 +40,15 @@ use GeneratorState::*;
 pub struct UbxGenerator<T, I>(Option<GeneratorState<T, I>>)
 where
     T: SendablePacket<I = I>;
+
+impl<T, I> UbxGenerator<T, I>
+where
+    T: SendablePacket<I = I>,
+{
+    pub fn done(&self) -> bool {
+        matches!(self.0, Some(Done))
+    }
+}
 
 impl<T, I> Iterator for UbxGenerator<T, I>
 where

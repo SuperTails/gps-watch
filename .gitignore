@@ -3,3 +3,5 @@
 
 .gdb_history
 .idea
+
+*.gmon

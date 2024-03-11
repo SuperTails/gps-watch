@@ -45,30 +45,35 @@ impl CfgItem {
 
 impl From<(u32, bool)> for CfgItem {
     fn from((key, val): (u32, bool)) -> Self {
+        assert_eq!(key & 0x7000_0000, 0x1000_0000);
         CfgItem::U1(key, val as u8)
     }
 }
 
 impl From<(u32, u8)> for CfgItem {
     fn from((key, val): (u32, u8)) -> Self {
+        assert_eq!(key & 0x7000_0000, 0x2000_0000);
         CfgItem::U1(key, val)
     }
 }
 
 impl From<(u32, u16)> for CfgItem {
     fn from((key, val): (u32, u16)) -> Self {
+        assert_eq!(key & 0x7000_0000, 0x3000_0000);
         CfgItem::U2(key, val)
     }
 }
 
 impl From<(u32, u32)> for CfgItem {
     fn from((key, val): (u32, u32)) -> Self {
+        assert_eq!(key & 0x7000_0000, 0x4000_0000);
         CfgItem::U4(key, val)
     }
 }
 
 impl From<(u32, u64)> for CfgItem {
     fn from((key, val): (u32, u64)) -> Self {
+        assert_eq!(key & 0x7000_0000, 0x5000_0000);
         CfgItem::U8(key, val)
     }
 }
@@ -88,3 +93,9 @@ pub const CFG_PM_ONTIME: u32 = 0x30d0_0005;
 pub const CFG_PM_WAITTIMEFIX: u32 = 0x10d0_0009;
 pub const CFG_PM_UPDATEEPH: u32 = 0x10d0_000a;
 pub const CFG_PM_EXTINTBACKUP: u32 = 0x10d0_000d;
+
+pub const CFG_NAVSPG_DYNMODEL: u32 = 0x2011_0021;
+pub const DYNMODEL_WRIST: u8 = 9;
+
+pub const CFG_RATE_MEAS: u32 = 0x3021_0001;
+pub const CFG_RATE_NAV: u32 = 0x3021_0002;

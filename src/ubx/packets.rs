@@ -11,7 +11,7 @@ use super::{cfg::CfgItem, generator::SendablePacket};
 // SAFETY: All fields are naturally aligned, so there is no padding.
 // Also, this device has the same endianness as UBX (little)
 #[repr(C)]
-#[derive(Pod, Zeroable, Copy, Clone, Debug)]
+#[derive(defmt::Format, Pod, Zeroable, Copy, Clone, Debug)]
 pub struct NavPvt {
     pub i_tow: u32,
     pub year: u16,
@@ -124,7 +124,7 @@ impl<const N: usize> SendablePacket for CfgValSet<N> {
     }
 
     fn payload_bytes(self) -> Self::I {
-        [0x00, self.layers(), 0x00, 0x00]
+        [0x01, self.layers(), 0x00, 0x00]
             .into_iter()
             .chain(self.items.into_iter().flat_map(|i| i.to_bytes()))
     }

@@ -986,10 +986,11 @@ macro_rules! lpuart_hal {
                             panic!("LPUART does not support 8x oversampling");
                         }
                         Oversampling::Over16 => {
-                            let brr = clocks.$pclkX().raw() / config.baudrate.0;
-                            assert!(brr >= 16, "impossible baud rate");
+                            let brr = clocks.$pclkX().raw() / config.baudrate.0 * 256;
+                            assert!(brr >= 0x300, "impossible baud rate");
 
                             usart.brr.write(|w| unsafe { w.bits(brr) });
+                            // usart.brr.write(|w| unsafe { w.bits(0x300) });
                         }
                     }
 
