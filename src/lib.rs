@@ -3,16 +3,17 @@
 #![feature(impl_trait_in_assoc_type)]
 
 use defmt_brtt as _; // import + register global logger
-use panic_probe as _; // import + register panic handler
+use panic_probe as _;
+use stm32l4xx_hal::pac::{Interrupt, NVIC}; // import + register panic handler
 
 use core::{
-    fmt::{self, Write},
-    sync::atomic::{AtomicUsize, Ordering},
+    fmt::{self, Write}, future::{poll_fn, Future}, sync::atomic::{AtomicUsize, Ordering}, task::Poll
 };
 use tinyvec::ArrayVec;
 
 pub mod display;
 pub mod ubx;
+pub mod rb;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
@@ -74,3 +75,43 @@ pub struct Position {
     pub lat: f32,
     pub lon: f32,
 }
+
+// Async shims for StaticProd and StaticCons
+
+// pub trait AsyncProd<T> {
+//     fn push_iter_async(&mut self, iter: impl Iterator<Item = T>) -> impl Future<Output = usize>;
+// }
+
+// impl<'a, T, const N: usize> AsyncProd<T> for StaticProd<'a, T, N> {
+//     fn push_iter_async(&mut self, iter: impl Iterator<Item = T>) -> impl Future<Output = usize> {
+//         let mut iter = iter.peekable();
+//         let mut count = 0;
+//         poll_fn(move |_| {
+//             defmt::info!("pended");
+//             // Push as many bytes as we can
+//             count += self.push_iter(&mut iter);
+//             // Pend the uart interrupt to make sure stuff gets sent
+//             NVIC::pend(Interrupt::LPUART1);
+//             // FIXME: need to wake!
+//             match iter.peek() {
+//                 Some(_) => Poll::Pending,
+//                 None => Poll::Ready(count),
+//             }
+//         })
+//     }
+// }
+
+// pub trait AsyncCons<T> {
+//     fn pop_async(&mut self) -> impl Future<Output = T>;
+// }
+
+// impl<'a, T, const N: usize> AsyncCons<T> for StaticCons<'a, T, N> {
+//     fn pop_async(&mut self) -> impl Future<Output = T> {
+//         poll_fn(move |_| {
+//             match self.try_pop() {
+//                 Some(b) => Poll::Ready(b),
+//                 None => Poll::Pending
+//             }
+//         })
+//     }
+// }

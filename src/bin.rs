@@ -9,6 +9,7 @@ use gps_watch::{
 };
 
 use chrono::{prelude::*, DateTime, Utc};
+use core::sync::atomic::AtomicUsize;
 use core::{fmt::Write, num::Wrapping};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
@@ -18,8 +19,6 @@ use embedded_graphics::{
     primitives::{PrimitiveStyleBuilder, Rectangle},
     text::Text,
 };
-use hal::pac::Interrupt;
-use ringbuf::{traits::*, StaticCons, StaticProd, StaticRb};
 use rtic_monotonics::{create_systick_token, systick::Systick};
 use stm32_usbd::UsbBus;
 use stm32l4xx_hal::{
@@ -39,6 +38,9 @@ use tinyvec::ArrayVec;
 use u8g2_fonts::{fonts, FontRenderer};
 use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
+use gps_watch::ubx::packets::CfgCfg;
+use rtic_sync::portable_atomic::Ordering;
+use gps_watch::rb::{Ringbuf, Consumer, Producer};
 
 type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     Spi<
@@ -56,19 +58,24 @@ type LpUart1 = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushP
 
 struct UartStuff {
     uart: LpUart1,
-    rx_send: StaticProd<'static, u8, UART_RX_BUFSIZE>,
-    tx_recv: StaticCons<'static, u8, UART_TX_BUFSIZE>,
+    rx_send: Producer<u8, UART_RX_BUFSIZE>,
+    tx_recv: Consumer<u8, UART_TX_BUFSIZE>,
 }
 
 const UART_TX_BUFSIZE: usize = 16;
 const UART_RX_BUFSIZE: usize = 256;
 const USB_BUFSIZE: usize = 16;
 
+static UART_TX_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static UART_RX_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 #[rtic::app(
     device = stm32l4xx_hal::pac,
     dispatchers = [EXTI0, EXTI1],
 )]
 mod app {
+
+    use hal::pac::Interrupt;
 
     use super::*;
 
@@ -187,12 +194,10 @@ mod app {
         uart.listen(serial::Event::Rxne);
 
         // Create channels for communicating between tasks and the UART interrupt
-        static mut UART_RX: StaticRb<u8, UART_RX_BUFSIZE> = StaticRb::new();
-        // SAFETY: this is the only time UART_RX is accessed
-        let (uart_rx_send, uart_rx_recv) = unsafe { UART_RX.split_ref() };
-        static mut UART_TX: StaticRb<u8, UART_TX_BUFSIZE> = StaticRb::new();
-        // SAFETY: this is the only time UART_TX is accessed
-        let (uart_tx_send, uart_tx_recv) = unsafe { UART_TX.split_ref() };
+        static UART_RX: Ringbuf<u8, UART_RX_BUFSIZE> = Ringbuf::new(None);
+        let (uart_rx_send, uart_rx_recv) = UART_RX.try_split().unwrap();
+        static UART_TX: Ringbuf<u8, UART_TX_BUFSIZE> = Ringbuf::new(Some(Interrupt::LPUART1));
+        let (uart_tx_send, uart_tx_recv) = UART_TX.try_split().unwrap();
 
         // Create GPS handler task
         let Ok(_) = gps_task::spawn(uart_tx_send, uart_rx_recv) else {
@@ -232,14 +237,14 @@ mod app {
             pin_dp: dp,
         };
 
-        static mut USB_RX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
-        // SAFETY: this is the only time USB_RX is accessed
-        let (usb_rx_send, _usb_rx_recv) = unsafe { USB_RX.split_ref() };
-        static mut USB_TX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
-        // SAFETY: this is the only time USB_TX is accessed
-        let (_usb_tx_send, usb_tx_recv) = unsafe { USB_TX.split_ref() };
-        // Pass to task for remaining initialization
-        let _ = usb_poll::spawn(usb, usb_tx_recv, usb_rx_send);
+        // static mut USB_RX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
+        // // SAFETY: this is the only time USB_RX is accessed
+        // let (usb_rx_send, _usb_rx_recv) = unsafe { USB_RX.split_ref() };
+        // static mut USB_TX: StaticRb<u8, USB_BUFSIZE> = StaticRb::new();
+        // // SAFETY: this is the only time USB_TX is accessed
+        // let (_usb_tx_send, usb_tx_recv) = unsafe { USB_TX.split_ref() };
+        // // Pass to task for remaining initialization
+        // let _ = usb_poll::spawn(usb, usb_tx_recv, usb_rx_send);
 
         // Spawn tasks
         display_task::spawn().unwrap();
@@ -262,11 +267,12 @@ mod app {
         trace!("idle enter");
 
         loop {
+            trace!("idle loop");
             // Only sleep in release mode, since the debugger doesn't interact with sleep very nicely
             #[cfg(debug_assertions)]
-            core::hint::spin_loop();
+            cortex_m::asm::nop();
             #[cfg(not(debug_assertions))]
-            rtic::export::wfi();
+            cortex_m::asm::wfi();
         }
     }
 
@@ -281,12 +287,14 @@ mod app {
         // Rxne
         if let Ok(b) = cx.local.uart.uart.read() {
             // If the recv buffer is full, then drop the received value
-            let _ = cx.local.uart.rx_send.try_push(b);
+            let _ = cx.local.uart.rx_send.try_write(b);
+            UART_RX_COUNTER.fetch_add(1, Ordering::Relaxed);
         }
         // Txe
         if cx.local.uart.uart.can_write() {
-            if let Some(b) = cx.local.uart.tx_recv.try_pop() {
+            if let Some(b) = cx.local.uart.tx_recv.try_read() {
                 cx.local.uart.uart.write(b).unwrap();
+                UART_TX_COUNTER.fetch_add(1, Ordering::Relaxed);
             }
             if !cx.local.uart.tx_recv.is_empty() {
                 cx.local.uart.uart.listen(serial::Event::Txe);
@@ -309,12 +317,24 @@ mod app {
     #[task(priority = 2, shared = [position, time])]
     async fn gps_task(
         mut cx: gps_task::Context,
-        mut uart_tx_send: StaticProd<'static, u8, UART_TX_BUFSIZE>,
-        mut uart_rx_recv: StaticCons<'static, u8, UART_RX_BUFSIZE>,
+        uart_tx_send: Producer<u8, UART_TX_BUFSIZE>,
+        uart_rx_recv: Consumer<u8, UART_RX_BUFSIZE>,
     ) {
         trace!("gps_task enter");
 
-        let packet = CfgValSet {
+        // Clear configuration
+        CfgCfg {
+            clear_mask: 0xFFFFFFFF,
+            save_mask: 0,
+            load_mask: 0xFFFFFFFF,
+            dev_bbr: true,
+            dev_flash: true,
+            dev_eeprom: false,
+            dev_spi_flash: false,
+        }.send(&uart_tx_send).await;
+
+        // Set configuration
+        CfgValSet {
             ram: true,
             bbr: true,
             flash: false,
@@ -326,54 +346,38 @@ mod app {
                 // Send NAV-PVT packets every 2 seconds
                 (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 4_u8).into(),
                 // PSMOO power save mode (turn off after getting signal)
-                (cfg::CFG_PM_OPERATEMODE, cfg::OPERATEMODE_PSMOO).into(),
-                // Only stay on for 10 seconds after acquiring signal
-                (cfg::CFG_PM_ONTIME, 10_u16).into(),
-                // Hold EXTINT low to force off, when GPS not needed
-                (cfg::CFG_PM_EXTINTBACKUP, true).into(),
-                // Wait for a Time fix before starting ONTIME timeout
-                (cfg::CFG_PM_WAITTIMEFIX, true).into(),
-                // Make sure the ephemeris stays up to date
-                (cfg::CFG_PM_UPDATEEPH, true).into(),
-                // Use the "wrist-worn" dynamic model
-                (cfg::CFG_NAVSPG_DYNMODEL, cfg::DYNMODEL_WRIST).into(),
-                // Measure GPS once every 2 seconds and get a nav solution
+                // (cfg::CFG_PM_OPERATEMODE, cfg::OPERATEMODE_PSMOO).into(),
+                // // Only stay on for 10 seconds after acquiring signal
+                // (cfg::CFG_PM_ONTIME, 10_u16).into(),
+                // // Hold EXTINT low to force off, when GPS not needed
+                // (cfg::CFG_PM_EXTINTBACKUP, true).into(),
+                // // Wait for a Time fix before starting ONTIME timeout
+                // (cfg::CFG_PM_WAITTIMEFIX, true).into(),
+                // // Make sure the ephemeris stays up to date
+                // (cfg::CFG_PM_UPDATEEPH, true).into(),
+                // // Use the "wrist-worn" dynamic model
+                // (cfg::CFG_NAVSPG_DYNMODEL, cfg::DYNMODEL_WRIST).into(),
+                // // Measure GPS once every 2 seconds and get a nav solution
                 // (cfg::CFG_RATE_MEAS, 2000_u16).into(),
                 // (cfg::CFG_RATE_NAV, 1_u16).into(),
             ],
-        };
-
-        let mut iter = packet.to_bytes();
-        loop {
-            // Push as many bytes as we can
-            uart_tx_send.push_iter(&mut iter);
-            // If we're done sending then we're done
-            if iter.done() {
-                break;
-            }
-            // Pend the uart interrupt to make sure stuff gets sent
-            rtic::pend(Interrupt::LPUART1);
-        }
+        }.send(&uart_tx_send).await;
 
         let mut parser = UbxParser::new();
         loop {
-            if let Some(b) = uart_rx_recv.try_pop() {
-                match parser.process_byte(b) {
-                    Some(Ok(pkt)) => {
-                        info!("Got packet: {}", pkt);
-                        match pkt {
-                            ParsedPacket::NavPvt(n) => {
-                                cx.shared.position.lock(|p| *p = n.position());
-                                cx.shared.time.lock(|t| *t = n.datetime());
-                            }
-                            _ => (),
+            match parser.process_byte(uart_rx_recv.async_read().await) {
+                Some(Ok(pkt)) => {
+                    info!("Got packet: {}", pkt);
+                    match pkt {
+                        ParsedPacket::NavPvt(n) => {
+                            cx.shared.position.lock(|p| *p = n.position());
+                            cx.shared.time.lock(|t| *t = n.datetime());
                         }
+                        _ => (),
                     }
-                    Some(Err(e)) => error!("UBX error: {}", e),
-                    None => (),
                 }
-            } else {
-                Systick::delay(10.millis()).await;
+                Some(Err(e)) => error!("UBX error: {}", e),
+                None => (),
             }
         }
     }
@@ -388,16 +392,17 @@ mod app {
         let mut i = Wrapping(0u8);
         loop {
             debug!("display_task loop");
-            // let mut dbg_txt = FmtBuf::<512>::new();
+            let mut dbg_txt = FmtBuf::<64>::new();
             let mut time_buf = FmtBuf::<8>::new();
             let mut coords_buf = FmtBuf::<64>::new();
             let pos = cx.shared.position.lock(|p| *p);
             let time = cx.shared.time.lock(|t| *t);
-            // let _ = write!(
-            //     dbg_txt,
-            //     "Debug Info:\nReceived {} bytes\nLast Packet: {:x?}",
-            //     count, last_packet
-            // );
+            let _ = write!(
+                dbg_txt,
+                "TX: {}, RX: {}",
+                UART_TX_COUNTER.load(Ordering::Relaxed),
+                UART_RX_COUNTER.load(Ordering::Relaxed),
+            );
             write!(time_buf, "{}:{:02}", time.hour(), time.minute()).unwrap();
 
             write!(
@@ -426,6 +431,11 @@ mod app {
                 // )
                 // .draw(display)
                 // .unwrap();
+                Text::new(
+                    dbg_txt.as_str().unwrap(),
+                    Point { x: 5, y: 135},
+                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                ).draw(display).unwrap();
 
                 // Watch UI
                 Rectangle {
@@ -480,53 +490,53 @@ mod app {
     }
 
     // Poll USB
-    #[task(priority = 1)]
-    async fn usb_poll(
-        _cx: usb_poll::Context,
-        usb: hal::usb::Peripheral,
-        mut tx_recv: StaticCons<'static, u8, USB_BUFSIZE>,
-        _rx_send: StaticProd<'static, u8, USB_BUFSIZE>,
-    ) {
-        trace!("usb_poll enter");
+    // #[task(priority = 1)]
+    // async fn usb_poll(
+    //     _cx: usb_poll::Context,
+    //     usb: hal::usb::Peripheral,
+    //     mut tx_recv: StaticCons<'static, u8, USB_BUFSIZE>,
+    //     _rx_send: StaticProd<'static, u8, USB_BUFSIZE>,
+    // ) {
+    //     trace!("usb_poll enter");
 
-        let usb_bus = UsbBus::new(usb);
+    //     let usb_bus = UsbBus::new(usb);
 
-        let mut serial = SerialPort::new(&usb_bus);
+    //     let mut serial = SerialPort::new(&usb_bus);
 
-        let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
-            .manufacturer("ECE500")
-            .product("Landhopper")
-            .serial_number("TEST")
-            .device_class(USB_CLASS_CDC)
-            .build();
+    //     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x16c0, 0x27dd))
+    //         .manufacturer("ECE500")
+    //         .product("Landhopper")
+    //         .serial_number("TEST")
+    //         .device_class(USB_CLASS_CDC)
+    //         .build();
 
-        let mut tx_buf = ArrayVec::<[u8; 16]>::new();
+    //     let mut tx_buf = ArrayVec::<[u8; 16]>::new();
 
-        loop {
-            Systick::delay(10.millis()).await;
+    //     loop {
+    //         Systick::delay(10.millis()).await;
 
-            debug!("usb_poll loop");
+    //         debug!("usb_poll loop");
 
-            while tx_buf.len() < tx_buf.capacity() {
-                if let Some(b) = tx_recv.try_pop() {
-                    tx_buf.push(b);
-                } else {
-                    break;
-                }
-            }
-            trace!("usb state: {}", usb_dev.state());
+    //         while tx_buf.len() < tx_buf.capacity() {
+    //             if let Some(b) = tx_recv.try_pop() {
+    //                 tx_buf.push(b);
+    //             } else {
+    //                 break;
+    //             }
+    //         }
+    //         trace!("usb state: {}", usb_dev.state());
 
-            if !usb_dev.poll(&mut [&mut serial]) {
-                continue;
-            }
+    //         if !usb_dev.poll(&mut [&mut serial]) {
+    //             continue;
+    //         }
 
-            match serial.write(&tx_buf) {
-                Ok(count) => {
-                    trace!("sent {} bytes to usb", count);
-                    tx_buf.drain(0..count).for_each(|_| ());
-                }
-                Err(_) => error!("usb error"),
-            }
-        }
-    }
+    //         match serial.write(&tx_buf) {
+    //             Ok(count) => {
+    //                 trace!("sent {} bytes to usb", count);
+    //                 tx_buf.drain(0..count).for_each(|_| ());
+    //             }
+    //             Err(_) => error!("usb error"),
+    //         }
+    //     }
+    // }
 }

@@ -43,6 +43,10 @@ impl UbxChecksum {
         let Self(a, b) = self;
         Self(a.wrapping_add(byte), b.wrapping_add(a).wrapping_add(byte))
     }
+
+    pub fn to_bytes(self) -> impl Iterator<Item = u8> {
+        [self.0, self.1].into_iter()
+    }
 }
 
 impl PartialEq<(u8, u8)> for UbxChecksum {

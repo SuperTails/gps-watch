@@ -1,7 +1,10 @@
+use core::future::Future;
+
+use crate::rb::Producer;
 use super::UbxChecksum;
 
-pub trait SendablePacket {
-    type I: Iterator<Item = u8>;
+pub trait SendablePacket: Sized + 'static {
+    type I: Iterator<Item = u8> + 'static;
 
     fn class(&self) -> u8;
     fn id(&self) -> u8;
@@ -17,6 +20,10 @@ pub trait SendablePacket {
 
     fn packet_len(&self) -> usize {
         8 + self.payload_len()
+    }
+
+    fn send<const N: usize>(self, tx: &Producer<u8, N>) -> impl Future<Output = usize> {
+        tx.async_write_iter(self.to_bytes())
     }
 }
 

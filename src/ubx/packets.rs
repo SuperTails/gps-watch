@@ -1,3 +1,5 @@
+use core::iter::once;
+
 use crate::Position;
 use bytemuck::{Pod, Zeroable};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -127,5 +129,71 @@ impl<const N: usize> SendablePacket for CfgValSet<N> {
         [0x01, self.layers(), 0x00, 0x00]
             .into_iter()
             .chain(self.items.into_iter().flat_map(|i| i.to_bytes()))
+    }
+}
+
+pub struct CfgCfg {
+    pub clear_mask: u32,
+    pub save_mask: u32,
+    pub load_mask: u32,
+    pub dev_bbr: bool,
+    pub dev_flash: bool,
+    pub dev_eeprom: bool,
+    pub dev_spi_flash: bool,
+}
+
+impl CfgCfg {
+    pub fn device_mask(&self) -> u8 {
+        (if self.dev_bbr { 1 << 0 } else { 0 }) |
+        (if self.dev_flash { 1 << 1 } else { 0 }) |
+        (if self.dev_eeprom { 1 << 2 } else { 0 }) |
+        (if self.dev_spi_flash { 1 << 3 } else { 0 })
+    }
+}
+
+impl SendablePacket for CfgCfg {
+    type I = impl Iterator<Item = u8>;
+
+    fn class(&self) -> u8 {
+        0x06
+    }
+
+    fn id(&self) -> u8 {
+        0x09
+    }
+
+    fn payload_len(&self) -> usize {
+        13
+    }
+
+    fn payload_bytes(self) -> Self::I {
+        [self.clear_mask, self.save_mask, self.load_mask].into_iter()
+        .flat_map(|i| i.to_le_bytes().into_iter())
+        .chain(once(self.device_mask()))
+    }
+}
+
+pub struct CfgRst {
+    pub nav_bbr_mask: u16,
+    pub reset_mode: u8,
+}
+
+impl SendablePacket for CfgRst {
+    type I = impl Iterator<Item = u8>;
+
+    fn class(&self) -> u8 {
+        0x06
+    }
+
+    fn id(&self) -> u8 {
+        0x04
+    }
+
+    fn payload_len(&self) -> usize {
+        4
+    }
+
+    fn payload_bytes(self) -> Self::I {
+        self.nav_bbr_mask.to_le_bytes().into_iter().chain(once(self.reset_mode)).chain(once(0))
     }
 }
