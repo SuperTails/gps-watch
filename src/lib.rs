@@ -3,17 +3,17 @@
 #![feature(impl_trait_in_assoc_type)]
 
 use defmt_brtt as _; // import + register global logger
-use panic_probe as _;
-use stm32l4xx_hal::pac::{Interrupt, NVIC}; // import + register panic handler
+use panic_probe as _; // import + register panic handler
 
 use core::{
-    fmt::{self, Write}, future::{poll_fn, Future}, sync::atomic::{AtomicUsize, Ordering}, task::Poll
+    fmt::{self, Write},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use tinyvec::ArrayVec;
 
 pub mod display;
-pub mod ubx;
 pub mod rb;
+pub mod ubx;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
@@ -23,11 +23,11 @@ fn panic() -> ! {
 }
 
 // Incrementing timestamp for Defmt printouts
-static COUNT: AtomicUsize = AtomicUsize::new(0);
+static TIMESTAMP: AtomicUsize = AtomicUsize::new(0);
 defmt::timestamp!("{=usize}", {
     // NOTE(no-CAS) `timestamps` runs with interrupts disabled
-    let n = COUNT.load(Ordering::Relaxed);
-    COUNT.store(n + 1, Ordering::Relaxed);
+    let n = TIMESTAMP.load(Ordering::Relaxed);
+    TIMESTAMP.store(n + 1, Ordering::Relaxed);
     n
 });
 

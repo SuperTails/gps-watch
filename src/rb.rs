@@ -1,5 +1,14 @@
-use core::{cell::UnsafeCell, future::{poll_fn, Future}, mem::MaybeUninit, ops::DerefMut, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}, task::{Poll::{Pending, Ready}, Waker}};
-use core::mem::take;
+use core::{
+    cell::UnsafeCell,
+    future::{poll_fn, Future},
+    mem::{take, MaybeUninit},
+    ops::DerefMut,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
+    task::{
+        Poll::{Pending, Ready},
+        Waker,
+    },
+};
 
 use spin::Mutex;
 use stm32l4xx_hal::pac::{Interrupt, NVIC};
@@ -16,6 +25,8 @@ pub struct Ringbuf<T, const N: usize> {
     buf: [UnsafeCell<MaybeUninit<T>>; N],
 }
 
+// SAFETY: The safety guarantees within later unsafe blocks in this implementation
+// allow us to safely pass the UnsafeCells over thread boundaries.
 unsafe impl<T, const N: usize> Send for Ringbuf<T, N> {}
 unsafe impl<T, const N: usize> Sync for Ringbuf<T, N> {}
 
@@ -36,11 +47,12 @@ impl<T, const N: usize> Ringbuf<T, N> {
             producer_waker: Mutex::new(None),
             // SAFETY: This array only contains MaybeUninits, which are sound to
             // have hold an uninit value
-            buf: unsafe { MaybeUninit::uninit().assume_init() }
+            buf: unsafe { MaybeUninit::uninit().assume_init() },
         }
     }
 
-    /// SAFETY: Must only be called once
+    /// SAFETY: Must only be called once, as only one Producer and Consumer may
+    /// exist per Ringbuf.
     pub unsafe fn split(&'static self) -> (Producer<T, N>, Consumer<T, N>) {
         self.is_split.store(true, Relaxed);
         (Producer(self), Consumer(self))
@@ -56,11 +68,11 @@ impl<T, const N: usize> Ringbuf<T, N> {
         }
     }
 
-    fn is_empty(&'static self) -> bool {
+    fn is_empty(&self) -> bool {
         self.head.load(Relaxed) == self.tail.load(Relaxed)
     }
 
-    fn is_full(&'static self) -> bool {
+    fn is_full(&self) -> bool {
         let head = self.head.load(Relaxed);
         let tail = self.tail.load(Relaxed);
         head - tail == N
@@ -74,11 +86,18 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
         if self.is_empty() {
             None
         } else {
+            // First read the value out of the cell
             // SAFETY: The buffer is not empty, and could not have become empty since
             // we checked it because only one Consumer may exist.
             let val = unsafe {
-                self.0.buf[self.0.tail.fetch_add(1, Relaxed) % N].get().read().assume_init()
+                self.0.buf[self.0.tail.load(Relaxed) % N]
+                    .get()
+                    .read()
+                    .assume_init()
             };
+            // Then increment the tail pointer
+            self.0.tail.fetch_add(1, Relaxed);
+
             // Wake the producer task
             if let Some(waker) = take(self.0.producer_waker.lock().deref_mut()) {
                 waker.wake();
@@ -94,10 +113,8 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
             None => {
                 *self.0.consumer_waker.lock() = Some(ctx.waker().clone());
                 Pending
-            },
-            Some(val) => {
-                Ready(val)
             }
+            Some(val) => Ready(val),
         })
     }
 
@@ -118,11 +135,15 @@ impl<T: 'static, const N: usize> Producer<T, N> {
         if self.is_full() {
             Err(val)
         } else {
+            // First write the value into the empty cell
             // SAFETY: The buffer is not full, and could not have become full since
             // we checked it because only one Producer may exist.
             unsafe {
-                (*self.0.buf[self.0.head.fetch_add(1, Relaxed) % N].get()).write(val);
+                (*self.0.buf[self.0.head.load(Relaxed) % N].get()).write(val);
             }
+            // Then increment the head index
+            self.0.head.fetch_add(1, Relaxed);
+
             // Wake the consumer task
             if let Some(waker) = take(self.0.consumer_waker.lock().deref_mut()) {
                 waker.wake();
@@ -135,17 +156,21 @@ impl<T: 'static, const N: usize> Producer<T, N> {
         }
     }
 
-    pub fn try_write_iter(&self, iter: &mut impl Iterator<Item = T>, leftover: Option<T>) -> (Result<(), T>, usize) {
+    pub fn try_write_iter(
+        &self,
+        iter: &mut impl Iterator<Item = T>,
+        leftover: Option<T>,
+    ) -> (Result<(), T>, usize) {
         if let Some(val) = leftover {
             if let Err(val) = self.try_write(val) {
-                return (Err(val), 0)
+                return (Err(val), 0);
             }
         }
         let mut count = 0_usize; // can't enumerate cause we don't own the iterator
         while let Some(val) = iter.next() {
             count += 1;
             if let Err(val) = self.try_write(val) {
-                return (Err(val), count)
+                return (Err(val), count);
             }
         }
         (Ok(()), count)
@@ -153,28 +178,35 @@ impl<T: 'static, const N: usize> Producer<T, N> {
 
     pub fn async_write<'a>(&'a self, val: T) -> impl Future<Output = ()> + 'a {
         let mut val_buf = Some(val);
-        poll_fn(move |ctx| match self.try_write(take(&mut val_buf).unwrap()) {
-            Err(val) => {
-                *self.0.producer_waker.lock() = Some(ctx.waker().clone());
-                val_buf = Some(val);
-                Pending
-            }
-            Ok(()) => Ready(())
-        })
+        poll_fn(
+            move |ctx| match self.try_write(take(&mut val_buf).unwrap()) {
+                Err(val) => {
+                    *self.0.producer_waker.lock() = Some(ctx.waker().clone());
+                    val_buf = Some(val);
+                    Pending
+                }
+                Ok(()) => Ready(()),
+            },
+        )
     }
 
-    pub fn async_write_iter<'a>(&'a self, mut iter: impl Iterator<Item = T> + 'a) -> impl Future<Output = usize> + 'a {
+    pub fn async_write_iter<'a>(
+        &'a self,
+        mut iter: impl Iterator<Item = T> + 'a,
+    ) -> impl Future<Output = usize> + 'a {
         let mut leftover = Some(None);
         let mut count = 0;
-        poll_fn(move |ctx| match self.try_write_iter(&mut iter, leftover.take().flatten()) {
-            (Err(val), newcount) => {
-                *self.0.producer_waker.lock() = Some(ctx.waker().clone());
-                leftover = Some(Some(val));
-                count += newcount;
-                Pending
-            }
-            (Ok(()), newcount) => Ready(count + newcount)
-        })
+        poll_fn(
+            move |ctx| match self.try_write_iter(&mut iter, leftover.take().flatten()) {
+                (Err(val), newcount) => {
+                    *self.0.producer_waker.lock() = Some(ctx.waker().clone());
+                    leftover = Some(Some(val));
+                    count += newcount;
+                    Pending
+                }
+                (Ok(()), newcount) => Ready(count + newcount),
+            },
+        )
     }
 
     pub fn is_full(&self) -> bool {

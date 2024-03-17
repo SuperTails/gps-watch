@@ -144,10 +144,10 @@ pub struct CfgCfg {
 
 impl CfgCfg {
     pub fn device_mask(&self) -> u8 {
-        (if self.dev_bbr { 1 << 0 } else { 0 }) |
-        (if self.dev_flash { 1 << 1 } else { 0 }) |
-        (if self.dev_eeprom { 1 << 2 } else { 0 }) |
-        (if self.dev_spi_flash { 1 << 3 } else { 0 })
+        (if self.dev_bbr { 1 << 0 } else { 0 })
+            | (if self.dev_flash { 1 << 1 } else { 0 })
+            | (if self.dev_eeprom { 1 << 2 } else { 0 })
+            | (if self.dev_spi_flash { 1 << 3 } else { 0 })
     }
 }
 
@@ -167,9 +167,10 @@ impl SendablePacket for CfgCfg {
     }
 
     fn payload_bytes(self) -> Self::I {
-        [self.clear_mask, self.save_mask, self.load_mask].into_iter()
-        .flat_map(|i| i.to_le_bytes().into_iter())
-        .chain(once(self.device_mask()))
+        [self.clear_mask, self.save_mask, self.load_mask]
+            .into_iter()
+            .flat_map(|i| i.to_le_bytes().into_iter())
+            .chain(once(self.device_mask()))
     }
 }
 
@@ -194,6 +195,10 @@ impl SendablePacket for CfgRst {
     }
 
     fn payload_bytes(self) -> Self::I {
-        self.nav_bbr_mask.to_le_bytes().into_iter().chain(once(self.reset_mode)).chain(once(0))
+        self.nav_bbr_mask
+            .to_le_bytes()
+            .into_iter()
+            .chain(once(self.reset_mode))
+            .chain(once(0))
     }
 }

@@ -1,7 +1,7 @@
 use core::future::Future;
 
-use crate::rb::Producer;
 use super::UbxChecksum;
+use crate::rb::Producer;
 
 pub trait SendablePacket: Sized + 'static {
     type I: Iterator<Item = u8> + 'static;
@@ -11,7 +11,7 @@ pub trait SendablePacket: Sized + 'static {
     fn payload_len(&self) -> usize;
     fn payload_bytes(self) -> Self::I;
 
-    fn to_bytes(self) -> UbxGenerator<Self, Self::I>
+    fn to_bytes(self) -> UbxGenerator<Self>
     where
         Self: Sized,
     {
@@ -28,40 +28,28 @@ pub trait SendablePacket: Sized + 'static {
 }
 
 // States are named for the portion of the packet which is *about to be sent*
-enum GeneratorState<T, I>
-where
-    T: SendablePacket<I = I>,
-{
+enum GeneratorState<T: SendablePacket> {
     Sync1 { packet: T },
     Sync2 { packet: T },
     Class { packet: T },
     Id { packet: T, checksum: UbxChecksum },
     Len1 { packet: T, checksum: UbxChecksum },
     Len2 { packet: T, checksum: UbxChecksum },
-    Payload { iter: I, checksum: UbxChecksum },
+    Payload { iter: T::I, checksum: UbxChecksum },
     Checksum2 { checksum: UbxChecksum },
     Done,
 }
 use GeneratorState::*;
 
-pub struct UbxGenerator<T, I>(Option<GeneratorState<T, I>>)
-where
-    T: SendablePacket<I = I>;
+pub struct UbxGenerator<T: SendablePacket>(Option<GeneratorState<T>>);
 
-impl<T, I> UbxGenerator<T, I>
-where
-    T: SendablePacket<I = I>,
-{
+impl<T: SendablePacket> UbxGenerator<T> {
     pub fn done(&self) -> bool {
         matches!(self.0, Some(Done))
     }
 }
 
-impl<T, I> Iterator for UbxGenerator<T, I>
-where
-    T: SendablePacket<I = I>,
-    I: Iterator<Item = u8>,
-{
+impl<T: SendablePacket> Iterator for UbxGenerator<T> {
     type Item = u8;
 
     fn next(&mut self) -> Option<Self::Item> {
