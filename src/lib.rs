@@ -38,6 +38,7 @@ pub fn exit() -> ! {
     }
 }
 
+#[derive(Default)]
 pub struct FmtBuf<const N: usize = 256>(pub ArrayVec<[u8; N]>);
 
 impl<const N: usize> Write for FmtBuf<N> {
@@ -55,7 +56,7 @@ impl<const N: usize> FmtBuf<N> {
     }
 
     pub fn new() -> Self {
-        Self(Default::default())
+        Self::default()
     }
 }
 

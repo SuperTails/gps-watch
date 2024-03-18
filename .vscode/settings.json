@@ -4,6 +4,7 @@
         "--target",
         "thumbv7em-none-eabihf"
     ],
-    "rust-analyzer.check.targets": ["thumbv7em-none-eabihf"]
+    "rust-analyzer.check.targets": ["thumbv7em-none-eabihf"],
+    "rust-analyzer.check.command": "clippy"
     // "rust-analyzer.nightly"
 }

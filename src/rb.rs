@@ -2,32 +2,32 @@ use core::{
     cell::UnsafeCell,
     future::{poll_fn, Future},
     mem::{take, MaybeUninit},
-    ops::DerefMut,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Relaxed, Acquire, Release}},
     task::{
         Poll::{Pending, Ready},
         Waker,
     },
 };
 
-use spin::Mutex;
+use cortex_m::interrupt::{
+    Mutex,
+    free as critical_section
+};
 use stm32l4xx_hal::pac::{Interrupt, NVIC};
 
 // Push at HEAD, pop at TAIL
-#[derive(Debug)]
 pub struct Ringbuf<T, const N: usize> {
     is_split: AtomicBool,
     interrupt: Option<Interrupt>,
     head: AtomicUsize,
     tail: AtomicUsize,
-    consumer_waker: Mutex<Option<Waker>>,
-    producer_waker: Mutex<Option<Waker>>,
+    consumer_waker: Mutex<UnsafeCell<Option<Waker>>>,
+    producer_waker: Mutex<UnsafeCell<Option<Waker>>>,
     buf: [UnsafeCell<MaybeUninit<T>>; N],
 }
 
 // SAFETY: The safety guarantees within later unsafe blocks in this implementation
-// allow us to safely pass the UnsafeCells over thread boundaries.
-unsafe impl<T, const N: usize> Send for Ringbuf<T, N> {}
+// allow us to safely share the UnsafeCells over thread boundaries.
 unsafe impl<T, const N: usize> Sync for Ringbuf<T, N> {}
 
 impl<T, const N: usize> Default for Ringbuf<T, N> {
@@ -43,15 +43,17 @@ impl<T, const N: usize> Ringbuf<T, N> {
             interrupt,
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
-            consumer_waker: Mutex::new(None),
-            producer_waker: Mutex::new(None),
+            consumer_waker: Mutex::new(UnsafeCell::new(None)),
+            producer_waker: Mutex::new(UnsafeCell::new(None)),
             // SAFETY: This array only contains MaybeUninits, which are sound to
             // have hold an uninit value
+            #[allow(clippy::uninit_assumed_init)]
             buf: unsafe { MaybeUninit::uninit().assume_init() },
         }
     }
 
-    /// SAFETY: Must only be called once, as only one Producer and Consumer may
+    /// ## Safety
+    /// Must only be called once, as only one Producer and Consumer may
     /// exist per Ringbuf.
     pub unsafe fn split(&'static self) -> (Producer<T, N>, Consumer<T, N>) {
         self.is_split.store(true, Relaxed);
@@ -90,16 +92,19 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
             // SAFETY: The buffer is not empty, and could not have become empty since
             // we checked it because only one Consumer may exist.
             let val = unsafe {
-                self.0.buf[self.0.tail.load(Relaxed) % N]
+                self.0.buf[self.0.tail.load(Acquire) % N]
                     .get()
                     .read()
                     .assume_init()
             };
             // Then increment the tail pointer
-            self.0.tail.fetch_add(1, Relaxed);
+            self.0.tail.fetch_add(1, Release);
 
             // Wake the producer task
-            if let Some(waker) = take(self.0.producer_waker.lock().deref_mut()) {
+            // SAFETY: Accessing the interior of the UnsafeCell is safe because
+            // it occurs inside a critical section, when we are guaranteed to be
+            // the only holder of the mutex.
+            if let Some(waker) = critical_section(|cs| unsafe { (*self.0.producer_waker.borrow(cs).get()).take() }) {
                 waker.wake();
                 defmt::debug!("woke up Producer from Consumer");
             }
@@ -108,10 +113,13 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
         }
     }
 
-    pub fn async_read<'a>(&'a self) -> impl Future<Output = T> + 'a {
+    pub fn async_read(&self) -> impl Future<Output = T> + '_ {
         poll_fn(|ctx| match self.try_read() {
             None => {
-                *self.0.consumer_waker.lock() = Some(ctx.waker().clone());
+                // SAFETY: Accessing the interior of the UnsafeCell is safe because
+                // it occurs inside a critical section, when we are guaranteed to be
+                // the only holder of the mutex.
+                critical_section(|cs| unsafe { *self.0.consumer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
                 Pending
             }
             Some(val) => Ready(val),
@@ -139,13 +147,16 @@ impl<T: 'static, const N: usize> Producer<T, N> {
             // SAFETY: The buffer is not full, and could not have become full since
             // we checked it because only one Producer may exist.
             unsafe {
-                (*self.0.buf[self.0.head.load(Relaxed) % N].get()).write(val);
+                (*self.0.buf[self.0.head.load(Acquire) % N].get()).write(val);
             }
             // Then increment the head index
-            self.0.head.fetch_add(1, Relaxed);
+            self.0.head.fetch_add(1, Release);
 
             // Wake the consumer task
-            if let Some(waker) = take(self.0.consumer_waker.lock().deref_mut()) {
+            // SAFETY: Accessing the interior of the UnsafeCell is safe because
+            // it occurs inside a critical section, when we are guaranteed to be
+            // the only holder of the mutex.
+            if let Some(waker) = critical_section(|cs| unsafe { (*self.0.consumer_waker.borrow(cs).get()).take() }) {
                 waker.wake();
                 defmt::debug!("woke up Consumer from Producer");
             }
@@ -167,7 +178,7 @@ impl<T: 'static, const N: usize> Producer<T, N> {
             }
         }
         let mut count = 0_usize; // can't enumerate cause we don't own the iterator
-        while let Some(val) = iter.next() {
+        for val in iter {
             count += 1;
             if let Err(val) = self.try_write(val) {
                 return (Err(val), count);
@@ -176,12 +187,15 @@ impl<T: 'static, const N: usize> Producer<T, N> {
         (Ok(()), count)
     }
 
-    pub fn async_write<'a>(&'a self, val: T) -> impl Future<Output = ()> + 'a {
+    pub fn async_write(&self, val: T) -> impl Future<Output = ()> + '_ {
         let mut val_buf = Some(val);
         poll_fn(
             move |ctx| match self.try_write(take(&mut val_buf).unwrap()) {
                 Err(val) => {
-                    *self.0.producer_waker.lock() = Some(ctx.waker().clone());
+                    // SAFETY: Accessing the interior of the UnsafeCell is safe because
+                    // it occurs inside a critical section, when we are guaranteed to be
+                    // the only holder of the mutex.
+                    critical_section(|cs| unsafe { *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
                     val_buf = Some(val);
                     Pending
                 }
@@ -199,7 +213,10 @@ impl<T: 'static, const N: usize> Producer<T, N> {
         poll_fn(
             move |ctx| match self.try_write_iter(&mut iter, leftover.take().flatten()) {
                 (Err(val), newcount) => {
-                    *self.0.producer_waker.lock() = Some(ctx.waker().clone());
+                    // SAFETY: Accessing the interior of the UnsafeCell is safe because
+                    // it occurs inside a critical section, when we are guaranteed to be
+                    // the only holder of the mutex.
+                    critical_section(|cs| unsafe { *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
                     leftover = Some(Some(val));
                     count += newcount;
                     Pending

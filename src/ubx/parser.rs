@@ -47,12 +47,18 @@ pub struct UbxParser {
     buf: UbxBuf,
 }
 
-impl UbxParser {
-    pub fn new() -> Self {
+impl Default for UbxParser {
+    fn default() -> Self {
         Self {
             state: Start,
             buf: UbxBuf::default(),
         }
+    }
+}
+
+impl UbxParser {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn feed(&mut self, b: u8) -> Option<Result<(u8, u8), UbxError>> {
@@ -209,7 +215,7 @@ impl UbxParser {
                     id: self.buf[1],
                 }),
                 (0x01, 0x07) => bytemuck::try_pod_read_unaligned(&self.buf)
-                    .map(|x| ParsedPacket::NavPvt(x))
+                    .map(ParsedPacket::NavPvt)
                     .map_err(|_| UbxError::BadPayload),
                 _ => Ok(ParsedPacket::OtherPacket),
             })

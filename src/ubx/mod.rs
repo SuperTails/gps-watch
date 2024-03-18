@@ -32,11 +32,11 @@ impl core::ops::DerefMut for UbxBuf {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Default, Debug, Copy, Clone, PartialEq)]
 pub struct UbxChecksum(pub u8, pub u8);
 impl UbxChecksum {
     pub fn new() -> Self {
-        Self(0, 0)
+        Self::default()
     }
 
     pub fn next(self, byte: u8) -> Self {

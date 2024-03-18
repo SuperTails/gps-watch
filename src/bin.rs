@@ -371,6 +371,7 @@ mod app {
             match parser.process_byte(uart_rx_recv.async_read().await) {
                 Some(Ok(pkt)) => {
                     info!("Got packet: {}", pkt);
+                    #[allow(clippy::single_match)]
                     match pkt {
                         ParsedPacket::NavPvt(n) => {
                             cx.shared.position.lock(|p| *p = n.position());
