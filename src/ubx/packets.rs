@@ -78,11 +78,10 @@ impl NavPvt {
             NaiveDateTime::new(
                 NaiveDate::from_ymd_opt(self.year as i32, self.month as u32, self.day as u32)
                     .unwrap(),
-                NaiveTime::from_hms_nano_opt(
+                NaiveTime::from_hms_opt(
                     self.hour as u32,
                     self.min as u32,
                     self.sec as u32,
-                    self.nano as u32,
                 )
                 .unwrap(),
             ),

@@ -5,8 +5,8 @@ use stm32l4xx_hal::{
     spi,
 };
 
-const WIDTH: usize = 400;
-const HEIGHT: usize = 240;
+const WIDTH: usize = 128;
+const HEIGHT: usize = 128;
 const WIDTH_BYTES: usize = WIDTH.div_ceil(8);
 const HEIGHT_BYTES: usize = HEIGHT.div_ceil(8);
 

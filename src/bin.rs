@@ -9,6 +9,7 @@ use gps_watch::{
 };
 
 use chrono::{prelude::*, DateTime, Utc};
+use hal::gpio::{PA4, PA5, PA6, PA7};
 use core::{fmt::Write, num::Wrapping, sync::atomic::AtomicUsize};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
@@ -47,12 +48,12 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
     Spi<
         SPI1,
         (
-            PB3<Alternate<PushPull, 5>>,
-            PB4<Alternate<PushPull, 5>>,
-            PB5<Alternate<PushPull, 5>>,
+            PA5<Alternate<PushPull, 5>>,
+            PA6<Alternate<PushPull, 5>>,
+            PA7<Alternate<PushPull, 5>>,
         ),
     >,
-    PA1<Output<PushPull>>,
+    PA4<Output<PushPull>>,
 >;
 
 type LpUart1 = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
@@ -139,19 +140,18 @@ mod app {
 
         // Initialize SPI and display
         let mut cs = gpioa
-            .pa1
+            .pa4
             .into_push_pull_output(&mut gpioa.moder, &mut gpioa.otyper);
         cs.set_low();
-        let sck = gpiob
-            .pb3
-            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let mosi = gpiob
-            .pb5
-            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let miso = gpiob
-            .pb4
-            .into_alternate(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-
+        let sck = gpioa
+            .pa5
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let miso = gpioa
+            .pa6
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let mosi = gpioa
+            .pa7
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
         let spi1 = Spi::spi1(
             cx.device.SPI1,
             (sck, miso, mosi),
@@ -345,7 +345,7 @@ mod app {
                 (cfg::CFG_UART1OUTPROT_UBX, true).into(),
                 (cfg::CFG_UART1OUTPROT_NMEA, false).into(),
                 // Send NAV-PVT packets every 2 seconds
-                (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 4_u8).into(),
+                (cfg::CFG_MSGOUT_UBX_NAV_PVT_UART1, 1_u8).into(),
                 // PSMOO power save mode (turn off after getting signal)
                 // (cfg::CFG_PM_OPERATEMODE, cfg::OPERATEMODE_PSMOO).into(),
                 // // Only stay on for 10 seconds after acquiring signal
@@ -394,13 +394,16 @@ mod app {
         let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
 
         let mut i = Wrapping(0u8);
+        let mut indicator = false;
         loop {
             debug!("display_task loop");
+
+
             let mut dbg_txt = FmtBuf::<64>::new();
             let mut time_buf = FmtBuf::<8>::new();
             let mut coords_buf = FmtBuf::<64>::new();
             let pos = cx.shared.position.lock(|p| *p);
-            let time = cx.shared.time.lock(|t| *t);
+            let time = cx.shared.time.lock(|t| *t).with_timezone(&FixedOffset::west_opt(3600 * 4).unwrap());
             let _ = write!(
                 dbg_txt,
                 "TX: {}, RX: {}",
@@ -418,6 +421,7 @@ mod app {
                 if pos.lon >= 0.0 { 'E' } else { 'W' }
             )
             .unwrap();
+            indicator = !indicator;
 
             cx.shared.display.lock(|display| {
                 display.clear();
@@ -443,23 +447,25 @@ mod app {
                 .draw(display)
                 .unwrap();
 
-                // Watch UI
-                Rectangle {
-                    top_left: Point { x: 0, y: 0 },
-                    size: Size {
-                        width: 128,
-                        height: 128,
-                    },
+
+                // Show indicator for when screen is redrawn
+                #[cfg(debug_assertions)] 
+                if indicator {
+                    Rectangle {
+                        top_left: Point { x: 0, y: 0 },
+                        size: Size {
+                            width: 2,
+                            height: 2,
+                        },
+                    }
+                    .into_styled(
+                        PrimitiveStyleBuilder::new()
+                            .fill_color(BinaryColor::On)
+                            .build(),
+                    )
+                    .draw(display)
+                    .unwrap();
                 }
-                .into_styled(
-                    PrimitiveStyleBuilder::new()
-                        .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
-                        .stroke_color(BinaryColor::On)
-                        .stroke_width(4)
-                        .build(),
-                )
-                .draw(display)
-                .unwrap();
 
                 clock_font
                     .render_aligned(
