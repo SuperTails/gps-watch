@@ -1,0 +1,7 @@
+*.pickle
+*.osm
+
+cache/
+
+formatted_lengths.txt
+formatted_nodes.txt
