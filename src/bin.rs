@@ -2,6 +2,7 @@
 #![no_std]
 #![feature(type_alias_impl_trait)]
 
+use gps_watch::tactile::Button;
 use gps_watch as _;
 use gps_watch::{
     ubx::{cfg, packets::CfgValSet, ParsedPacket, SendablePacket, UbxParser},
@@ -9,7 +10,7 @@ use gps_watch::{
 };
 
 use chrono::{prelude::*, DateTime, Utc};
-use hal::gpio::{PA4, PA5, PA6, PA7};
+use hal::gpio::{Input, PullUp, PA4, PA5, PA6, PA7, PA8, PB0, PB1};
 use core::{fmt::Write, num::Wrapping, sync::atomic::AtomicUsize};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
@@ -28,13 +29,13 @@ use rtic_sync::portable_atomic::Ordering;
 use stm32_usbd::UsbBus;
 use stm32l4xx_hal::{
     self as hal,
-    gpio::{Alternate, Output, PushPull, PA1, PA2, PA3, PB3, PB4, PB5},
+    gpio::{Alternate, Output, PushPull, PA2, PA3, PB4, PB5},
     hal::spi::{Mode, Phase, Polarity},
     pac,
     pac::{LPUART1, SPI1},
     prelude::*,
     rcc::{ClockSecuritySystem, CrystalBypass},
-    rtc::{Event, Rtc, RtcClockSource, RtcConfig},
+    rtc::{Rtc, RtcClockSource, RtcConfig},
     serial,
     serial::{Config, Serial},
     spi::Spi,
@@ -58,6 +59,14 @@ type SharpMemDisplay = gps_watch::display::SharpMemDisplay<
 
 type LpUart1 = Serial<LPUART1, (PA2<Alternate<PushPull, 8>>, PA3<Alternate<PushPull, 8>>)>;
 
+type Joystick = gps_watch::tactile::Joystick<
+    PB5<Input<PullUp>>,
+    PB4<Input<PullUp>>,
+    PB1<Input<PullUp>>,
+    PB0<Input<PullUp>>,
+    PA8<Input<PullUp>>,
+>;
+
 struct UartStuff {
     uart: LpUart1,
     rx_send: Producer<u8, UART_RX_BUFSIZE>,
@@ -71,13 +80,22 @@ const USB_BUFSIZE: usize = 16;
 static UART_TX_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static UART_RX_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedrawEvent {
+    Button(Button),
+    Time,
+    Location,
+    Battery,
+}
+
 #[rtic::app(
     device = stm32l4xx_hal::pac,
-    dispatchers = [EXTI0, EXTI1],
+    dispatchers = [EXTI2, EXTI3],
 )]
 mod app {
 
-    use hal::pac::Interrupt;
+    use hal::{gpio::Edge, pac::Interrupt};
+    use rtic_sync::{channel::{Receiver, Sender}, make_channel};
 
     use super::*;
 
@@ -87,12 +105,17 @@ mod app {
         display: SharpMemDisplay,
         position: Position,
         time: DateTime<Utc>,
+        joystick: Joystick,
     }
 
     // Local resources go here
     #[local]
     struct Local {
         uart: UartStuff,
+        button_redraw_0:   Sender<'static, RedrawEvent, 8>,
+        button_redraw_1:   Sender<'static, RedrawEvent, 8>,
+        button_redraw_4:   Sender<'static, RedrawEvent, 8>,
+        button_redraw_5_9: Sender<'static, RedrawEvent, 8>,
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -166,15 +189,15 @@ mod app {
         );
 
         // Initialize RTC and interrupts
-        let mut rtc = Rtc::rtc(
+        let _rtc = Rtc::rtc(
             cx.device.RTC,
             &mut rcc.apb1r1,
             &mut rcc.bdcr,
             &mut pwr.cr1,
             RtcConfig::default().clock_config(RtcClockSource::LSE),
         );
-        rtc.wakeup_timer().start(10000u16);
-        rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
+        //rtc.wakeup_timer().start(10000u16);
+        //rtc.listen(&mut cx.device.EXTI, Event::WakeupTimer);
         // rtic::pend(Interrupt::RTC_WKUP);
 
         // Initialize UART for GPS
@@ -200,15 +223,52 @@ mod app {
         static UART_TX: Ringbuf<u8, UART_TX_BUFSIZE> = Ringbuf::new(Some(Interrupt::LPUART1));
         let (uart_tx_send, uart_tx_recv) = UART_TX.try_split().unwrap();
 
-        // Create GPS handler task
-        let Ok(_) = gps_task::spawn(uart_tx_send, uart_rx_recv) else {
-            panic!()
-        };
-
         let uart = UartStuff {
             uart,
             rx_send: uart_rx_send,
             tx_recv: uart_tx_recv,
+        };
+
+        let mut pin_left = gpiob
+            .pb5
+            .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr);
+        let mut pin_right = gpiob
+            .pb4
+            .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr);
+        let mut pin_up = gpiob
+            .pb1
+            .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr);
+        let mut pin_down = gpiob
+            .pb0
+            .into_pull_up_input(&mut gpiob.moder, &mut gpiob.pupdr);
+        let mut pin_center = gpioa
+            .pa8
+            .into_pull_up_input(&mut gpioa.moder, &mut gpioa.pupdr);
+    
+        pin_left  .make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
+        pin_right .make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
+        pin_up    .make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
+        pin_down  .make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
+        pin_center.make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
+
+        pin_left  .trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+        pin_right .trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+        pin_up    .trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+        pin_down  .trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+        pin_center.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+
+        pin_left  .enable_interrupt(&mut cx.device.EXTI);
+        pin_right .enable_interrupt(&mut cx.device.EXTI);
+        pin_up    .enable_interrupt(&mut cx.device.EXTI);
+        pin_down  .enable_interrupt(&mut cx.device.EXTI);
+        pin_center.enable_interrupt(&mut cx.device.EXTI);
+
+        let joystick = Joystick {
+            pin_left,
+            pin_right,
+            pin_up,
+            pin_down,
+            pin_center,
         };
 
         // Enable the USB interrupt
@@ -245,9 +305,11 @@ mod app {
         // Pass to task for remaining initialization
         let _ = usb_poll::spawn(usb, usb_tx_recv, usb_rx_send);
 
+        let (display_redraw_tx, display_redraw_rx) = make_channel!(RedrawEvent, 8);
+
         // Spawn tasks
-        display_task::spawn().unwrap();
-        // gps_status::spawn().unwrap();
+        display_task::spawn(display_redraw_rx).unwrap();
+        gps_task::spawn(uart_tx_send, uart_rx_recv, display_redraw_tx.clone()).map_err(|_| ()).unwrap();
 
         info!("done initializing!");
         trace!("init exit");
@@ -256,8 +318,15 @@ mod app {
                 display: SharpMemDisplay::new(spi1, cs),
                 position: Position::default(),
                 time: DateTime::default(),
+                joystick,
             },
-            Local { uart },
+            Local {
+                uart,
+                button_redraw_0:   display_redraw_tx.clone(),
+                button_redraw_1:   display_redraw_tx.clone(),
+                button_redraw_4:   display_redraw_tx.clone(),
+                button_redraw_5_9: display_redraw_tx,
+            },
         )
     }
 
@@ -308,6 +377,42 @@ mod app {
         info!("rtc wakeup!");
     }
 
+    #[task(binds = EXTI0, shared = [joystick], local = [button_redraw_0])]
+    fn on_button_0(mut cx: on_button_0::Context) {
+        cx.shared.joystick.lock(|joystick| {
+            while let Some(button) = joystick.next_edge() {
+                let _ = cx.local.button_redraw_0.try_send(RedrawEvent::Button(button));
+            }
+        });
+    }
+
+    #[task(binds = EXTI1, shared = [joystick], local = [button_redraw_1])]
+    fn on_button_1(mut cx: on_button_1::Context) {
+        cx.shared.joystick.lock(|joystick| {
+            while let Some(button) = joystick.next_edge() {
+                let _ = cx.local.button_redraw_1.try_send(RedrawEvent::Button(button));
+            }
+        });
+    }
+
+    #[task(binds = EXTI4, shared = [joystick], local = [button_redraw_4])]
+    fn on_button_4(mut cx: on_button_4::Context) {
+        cx.shared.joystick.lock(|joystick| {
+            while let Some(button) = joystick.next_edge() {
+                let _ = cx.local.button_redraw_4.try_send(RedrawEvent::Button(button));
+            }
+        });
+    }
+
+    #[task(binds = EXTI9_5, shared = [joystick], local = [button_redraw_5_9])]
+    fn on_button_5_or_9(mut cx: on_button_5_or_9::Context) {
+        cx.shared.joystick.lock(|joystick| {
+            while let Some(button) = joystick.next_edge() {
+                let _ = cx.local.button_redraw_5_9.try_send(RedrawEvent::Button(button));
+            }
+        });
+    }
+
     ////////////////////////////////////////////////////////////////////////////
     // Periodic tasks //////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////
@@ -318,6 +423,7 @@ mod app {
         mut cx: gps_task::Context,
         uart_tx_send: Producer<u8, UART_TX_BUFSIZE>,
         uart_rx_recv: Consumer<u8, UART_RX_BUFSIZE>,
+        mut redraw: Sender<'static, RedrawEvent, 8>,
     ) {
         trace!("gps_task enter");
 
@@ -374,8 +480,18 @@ mod app {
                     #[allow(clippy::single_match)]
                     match pkt {
                         ParsedPacket::NavPvt(n) => {
-                            cx.shared.position.lock(|p| *p = n.position());
+                            let mut changed = false;
+                            cx.shared.position.lock(|p| {
+                                if *p != n.position() {
+                                    changed = true;
+                                }
+                                *p = n.position();
+                            });
                             cx.shared.time.lock(|t| *t = n.datetime());
+
+                            if changed {
+                                let _ = redraw.try_send(RedrawEvent::Location);
+                            }
                         }
                         _ => (),
                     }
@@ -387,17 +503,29 @@ mod app {
     }
 
     #[task(priority = 1, shared = [display, position, time])]
-    async fn display_task(mut cx: display_task::Context) {
-        trace!("display_task enter");
+    async fn display_task(mut cx: display_task::Context, mut redraw_events: Receiver<'static, RedrawEvent, 8>) {
         cx.shared.display.lock(|display| display.clear_flush());
 
         let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
 
+        /*
+        static NODES: [[f32; 2]; 2806] = include!("../formatted_nodes.txt");
+        static LENGTHS: [usize; 588] = include!("../formatted_lengths.txt");
+
+        const MIN_X: f32 = 0.27792380555555557;
+        const MIN_Y: f32 = 0.3769527127520212;
+
+        const MAX_X: f32 = 0.27796433333333337;
+        const MAX_Y: f32 = 0.3769777514380456;
+
+        const SPAN: f32 = 2.5038686024436707e-05;
+        */
+
         let mut i = Wrapping(0u8);
         let mut indicator = false;
-        loop {
-            debug!("display_task loop");
-
+    
+        while let Ok(event) = redraw_events.recv().await {
+            debug!("display_task loop, got event {}", event);
 
             let mut dbg_txt = FmtBuf::<64>::new();
             let mut time_buf = FmtBuf::<8>::new();
@@ -447,6 +575,33 @@ mod app {
                 .draw(display)
                 .unwrap();
 
+                /*
+                let mut i = 0;
+                for length in LENGTHS {
+                    for j in i..(i + length - 1) {
+                        let [x0, y0] = NODES[j];
+                        let [x1, y1] = NODES[j + 1];
+
+                        let [x0, y0] = [(x0 - MIN_X) / SPAN, (y0 - MIN_Y) / SPAN];
+                        let [x1, y1] = [(x1 - MIN_X) / SPAN, (y1 - MIN_Y) / SPAN];
+
+                        embedded_graphics::primitives::Line {
+                            start: Point { x: (x0 * 128.0) as i32, y: (y0 * 128.0) as i32 },
+                            end:   Point { x: (x1 * 128.0) as i32, y: (y1 * 128.0) as i32 },
+                        }
+                        .into_styled(
+                            PrimitiveStyleBuilder::new()
+                                .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
+                                .stroke_color(BinaryColor::On)
+                                .stroke_width(4)
+                                .build(),
+                        )
+                        .draw(display)
+                        .unwrap();
+                    }
+                    i += length;
+                }
+                */
 
                 // Show indicator for when screen is redrawn
                 #[cfg(debug_assertions)] 
@@ -496,7 +651,6 @@ mod app {
             //     rect_styled.draw(display).unwrap();
             //     display.flush();
             // });
-            Systick::delay(200.millis()).await;
             i += 1;
         }
     }

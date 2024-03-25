@@ -610,7 +610,7 @@ impl timer::CountDown for WakeupTimer<'_> {
 
         // Let's wait for WUTWF to clear. Otherwise we might run into a race
         // condition, if the user calls this method again really quickly.
-        // while rtc_registers::is_wakeup_timer_write_flag_set(&self.rtc.rtc) {}
+        while rtc_registers::is_wakeup_timer_write_flag_set(&self.rtc.rtc) {}
     }
 
     fn wait(&mut self) -> nb::Result<(), Void> {

@@ -14,6 +14,7 @@ use tinyvec::ArrayVec;
 pub mod display;
 pub mod rb;
 pub mod ubx;
+pub mod tactile;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
@@ -71,7 +72,7 @@ impl Abs for f32 {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub struct Position {
     pub lat: f32,
     pub lon: f32,
