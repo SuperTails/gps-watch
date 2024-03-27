@@ -1,4 +1,4 @@
-use super::{packets::NavPvt, UbxBuf, UbxChecksum, UbxError, UBX_BUFSIZE};
+use super::{packets::*, UbxBuf, UbxChecksum, UbxError, UBX_BUFSIZE};
 
 // States are named for the portion of the packet which was *last received*
 #[derive(Copy, Clone)]
@@ -206,17 +206,35 @@ impl UbxParser {
     pub fn process_byte(&mut self, b: u8) -> Option<Result<ParsedPacket, UbxError>> {
         self.feed(b).map(|r| {
             r.and_then(|(class, id)| match (class, id) {
-                (0x05, 0x01) => Ok(ParsedPacket::AckAck {
-                    class: self.buf[0],
-                    id: self.buf[1],
-                }),
-                (0x05, 0x00) => Ok(ParsedPacket::AckNak {
-                    class: self.buf[0],
-                    id: self.buf[1],
-                }),
-                (0x01, 0x07) => bytemuck::try_pod_read_unaligned(&self.buf)
+                ACK_ACK_ID => {
+                    if self.buf.len() == 2 {
+                        Ok(ParsedPacket::AckAck {
+                            class: self.buf[0],
+                            id: self.buf[1],
+                        })
+                    } else {
+                        Err(UbxError::BadPayload)
+                    }
+                }
+                ACK_NAK_ID => {
+                    if self.buf.len() == 2 {
+                        Ok(ParsedPacket::AckNak {
+                            class: self.buf[0],
+                            id: self.buf[1],
+                        })
+                    } else {
+                        Err(UbxError::BadPayload)
+                    }
+                }
+                NAV_PVT_ID => bytemuck::try_pod_read_unaligned(&self.buf)
                     .map(ParsedPacket::NavPvt)
                     .map_err(|_| UbxError::BadPayload),
+                MON_RF_ID => bytemuck::try_pod_read_unaligned(&self.buf)
+                    .map(ParsedPacket::NavPvt)
+                    .map_err(|_| UbxError::BadPayload),
+                INF_NOTICE_ID => Ok(ParsedPacket::InfNotice(self.buf)),
+                INF_WARNING_ID => Ok(ParsedPacket::InfWarning(self.buf)),
+                INF_ERROR_ID => Ok(ParsedPacket::InfError(self.buf)),
                 _ => Ok(ParsedPacket::OtherPacket),
             })
         })
@@ -230,7 +248,10 @@ pub enum ParsedPacket {
 
     NavPvt(NavPvt),
 
+    MonRf(MonRf),
+
     InfNotice(UbxBuf),
+    InfWarning(UbxBuf),
     InfError(UbxBuf),
 
     OtherPacket,

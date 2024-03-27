@@ -80,12 +80,12 @@ where
     }
 
     pub fn clear_flush(&mut self) {
-        self.start(CLEAR_BIT).send(&[0x00]).finish();
+        self.start(CLEAR_BIT.reverse_bits()).send(&[0x00]).finish();
     }
 
     pub fn write_line(&mut self, line: u8, data: &[u8; WIDTH_BYTES]) {
-        self.start(UPDATE_BIT)
-            .send(&[line])
+        self.start(UPDATE_BIT.reverse_bits())
+            .send(&[line.reverse_bits()])
             .send(data)
             .send(&[0x00, 0x00])
             .finish();
@@ -93,7 +93,9 @@ where
 }
 
 pub struct SharpMemDisplay<SPI, CS> {
+    // Storage: Row-first, group of 8 columns second, then LSB => *lowest* numbered column of the 8
     buf: [[u8; WIDTH_BYTES]; HEIGHT],
+    // Storage: group of 8 rows, LSB => *highest* numbered row of the 8
     dirty: [u8; HEIGHT_BYTES],
     dirty_any: bool,
     driver: SharpMemDisplayDriver<SPI, CS>,
@@ -118,9 +120,9 @@ where
             return;
         }
         if state {
-            self.buf[y][x / 8] |= 1u8 << (x % 8);
+            self.buf[y][x / 8] |= 1u8 << (7 - (x % 8));
         } else {
-            self.buf[y][x / 8] &= !(1u8 << (x % 8));
+            self.buf[y][x / 8] &= !(1u8 << (7 - (x % 8)));
         }
         self.dirty[y / 8] |= 1u8 << (y % 8);
         self.dirty_any = true;
@@ -139,12 +141,12 @@ where
             .filter(|(y, _)| (self.dirty[y / 8] & (1u8 << (y % 8))) != 0u8)
             // Send it
             .fold(
-                self.driver.start(UPDATE_BIT), // command byte
+                self.driver.start(UPDATE_BIT.reverse_bits()), // command byte
                 |trn, (y, row)| {
-                    trn.send(&[(y + 1) as u8]) // address byte, row is 1-indexed
+                    trn.send(&[((y + 1) as u8).reverse_bits()]) // address byte, row is 1-indexed
                         .send(row) // row data
-                        .send(&[0x00])
-                }, // spacing byte
+                        .send(&[0x00]) // spacing byte
+                },
             )
             .send(&[0x00]) // termination byte
             .finish();

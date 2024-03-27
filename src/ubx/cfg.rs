@@ -1,6 +1,5 @@
 use tinyvec::ArrayVec;
 
-// TODO: enforce size based on key
 #[derive(Copy, Clone)]
 pub enum CfgItem {
     U1(u32, u8),
@@ -45,35 +44,35 @@ impl CfgItem {
 
 impl From<(u32, bool)> for CfgItem {
     fn from((key, val): (u32, bool)) -> Self {
-        assert_eq!(key & 0x7000_0000, 0x1000_0000);
+        debug_assert_eq!(key & 0x7000_0000, 0x1000_0000);
         CfgItem::U1(key, val as u8)
     }
 }
 
 impl From<(u32, u8)> for CfgItem {
     fn from((key, val): (u32, u8)) -> Self {
-        assert_eq!(key & 0x7000_0000, 0x2000_0000);
+        debug_assert_eq!(key & 0x7000_0000, 0x2000_0000);
         CfgItem::U1(key, val)
     }
 }
 
 impl From<(u32, u16)> for CfgItem {
     fn from((key, val): (u32, u16)) -> Self {
-        assert_eq!(key & 0x7000_0000, 0x3000_0000);
+        debug_assert_eq!(key & 0x7000_0000, 0x3000_0000);
         CfgItem::U2(key, val)
     }
 }
 
 impl From<(u32, u32)> for CfgItem {
     fn from((key, val): (u32, u32)) -> Self {
-        assert_eq!(key & 0x7000_0000, 0x4000_0000);
+        debug_assert_eq!(key & 0x7000_0000, 0x4000_0000);
         CfgItem::U4(key, val)
     }
 }
 
 impl From<(u32, u64)> for CfgItem {
     fn from((key, val): (u32, u64)) -> Self {
-        assert_eq!(key & 0x7000_0000, 0x5000_0000);
+        debug_assert_eq!(key & 0x7000_0000, 0x5000_0000);
         CfgItem::U8(key, val)
     }
 }
@@ -82,6 +81,7 @@ pub const CFG_UART1OUTPROT_UBX: u32 = 0x1074_0001;
 pub const CFG_UART1OUTPROT_NMEA: u32 = 0x1074_0002;
 
 pub const CFG_MSGOUT_UBX_NAV_PVT_UART1: u32 = 0x2091_0007;
+pub const CFG_MSGOUT_UBX_MON_RF_UART1: u32 = 0x2091_0359;
 
 pub const CFG_PM_OPERATEMODE: u32 = 0x20d0_0001;
 pub const OPERATEMODE_FULL: u8 = 0;

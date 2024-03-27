@@ -10,6 +10,14 @@ use super::{cfg::CfgItem, generator::SendablePacket};
 // Packets which can be parsed /////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+pub const ACK_ACK_ID: (u8, u8) = (0x05, 0x01);
+pub const ACK_NAK_ID: (u8, u8) = (0x05, 0x00);
+pub const NAV_PVT_ID: (u8, u8) = (0x01, 0x07);
+pub const MON_RF_ID: (u8, u8) = (0x0a, 0x38);
+pub const INF_NOTICE_ID: (u8, u8) = (0x04, 0x02);
+pub const INF_ERROR_ID: (u8, u8) = (0x04, 0x00);
+pub const INF_WARNING_ID: (u8, u8) = (0x04, 0x01);
+
 // SAFETY: All fields are naturally aligned, so there is no padding.
 // Also, this device has the same endianness as UBX (little)
 #[repr(C)]
@@ -78,16 +86,41 @@ impl NavPvt {
             NaiveDateTime::new(
                 NaiveDate::from_ymd_opt(self.year as i32, self.month as u32, self.day as u32)
                     .unwrap(),
-                NaiveTime::from_hms_opt(
-                    self.hour as u32,
-                    self.min as u32,
-                    self.sec as u32,
-                )
-                .unwrap(),
+                NaiveTime::from_hms_opt(self.hour as u32, self.min as u32, self.sec as u32)
+                    .unwrap(),
             ),
             Utc,
         )
     }
+}
+
+// SAFETY: All fields are naturally aligned, so there is no padding.
+// Also, this device has the same endianness as UBX (little)
+#[repr(C)]
+#[derive(defmt::Format, Pod, Zeroable, Copy, Clone, Debug)]
+pub struct MonRf {
+    pub version: u8,
+    pub n_blocks: u8,
+    pub reserved0: [u8; 2],
+
+    pub block_id: u8,
+    pub flags: u8,
+    pub ant_status: u8,
+    pub ant_power: u8,
+
+    pub post_status: u32,
+    pub reserved1: [u8; 4],
+
+    pub noise_per_ms: u16,
+    pub agc_cnt: u16,
+
+    pub cw_suppression: u8,
+    pub ofs_i: i8,
+    pub mag_i: u8,
+    pub ofs_q: i8,
+
+    pub mag_q: u8,
+    pub reserved2: [u8; 3],
 }
 
 ////////////////////////////////////////////////////////////////////////////////

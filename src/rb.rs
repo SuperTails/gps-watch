@@ -2,17 +2,17 @@ use core::{
     cell::UnsafeCell,
     future::{poll_fn, Future},
     mem::{take, MaybeUninit},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering::{Relaxed, Acquire, Release}},
+    sync::atomic::{
+        AtomicBool, AtomicUsize,
+        Ordering::{Acquire, Relaxed, Release},
+    },
     task::{
         Poll::{Pending, Ready},
         Waker,
     },
 };
 
-use cortex_m::interrupt::{
-    Mutex,
-    free as critical_section
-};
+use cortex_m::interrupt::{free as critical_section, Mutex};
 use stm32l4xx_hal::pac::{Interrupt, NVIC};
 
 // Push at HEAD, pop at TAIL
@@ -104,7 +104,9 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
             // SAFETY: Accessing the interior of the UnsafeCell is safe because
             // it occurs inside a critical section, when we are guaranteed to be
             // the only holder of the mutex.
-            if let Some(waker) = critical_section(|cs| unsafe { (*self.0.producer_waker.borrow(cs).get()).take() }) {
+            if let Some(waker) =
+                critical_section(|cs| unsafe { (*self.0.producer_waker.borrow(cs).get()).take() })
+            {
                 waker.wake();
                 defmt::debug!("woke up Producer from Consumer");
             }
@@ -119,7 +121,9 @@ impl<T: 'static, const N: usize> Consumer<T, N> {
                 // SAFETY: Accessing the interior of the UnsafeCell is safe because
                 // it occurs inside a critical section, when we are guaranteed to be
                 // the only holder of the mutex.
-                critical_section(|cs| unsafe { *self.0.consumer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
+                critical_section(|cs| unsafe {
+                    *self.0.consumer_waker.borrow(cs).get() = Some(ctx.waker().clone())
+                });
                 Pending
             }
             Some(val) => Ready(val),
@@ -156,7 +160,9 @@ impl<T: 'static, const N: usize> Producer<T, N> {
             // SAFETY: Accessing the interior of the UnsafeCell is safe because
             // it occurs inside a critical section, when we are guaranteed to be
             // the only holder of the mutex.
-            if let Some(waker) = critical_section(|cs| unsafe { (*self.0.consumer_waker.borrow(cs).get()).take() }) {
+            if let Some(waker) =
+                critical_section(|cs| unsafe { (*self.0.consumer_waker.borrow(cs).get()).take() })
+            {
                 waker.wake();
                 defmt::debug!("woke up Consumer from Producer");
             }
@@ -195,7 +201,9 @@ impl<T: 'static, const N: usize> Producer<T, N> {
                     // SAFETY: Accessing the interior of the UnsafeCell is safe because
                     // it occurs inside a critical section, when we are guaranteed to be
                     // the only holder of the mutex.
-                    critical_section(|cs| unsafe { *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
+                    critical_section(|cs| unsafe {
+                        *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone())
+                    });
                     val_buf = Some(val);
                     Pending
                 }
@@ -216,7 +224,9 @@ impl<T: 'static, const N: usize> Producer<T, N> {
                     // SAFETY: Accessing the interior of the UnsafeCell is safe because
                     // it occurs inside a critical section, when we are guaranteed to be
                     // the only holder of the mutex.
-                    critical_section(|cs| unsafe { *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone()) });
+                    critical_section(|cs| unsafe {
+                        *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone())
+                    });
                     leftover = Some(Some(val));
                     count += newcount;
                     Pending
@@ -224,6 +234,23 @@ impl<T: 'static, const N: usize> Producer<T, N> {
                 (Ok(()), newcount) => Ready(count + newcount),
             },
         )
+    }
+
+    /// Creates a Future which waits for the buffer to be completely empty.
+    pub fn flush(&self) -> impl Future<Output = ()> + '_ {
+        poll_fn(move |ctx| {
+            if self.is_empty() {
+                Ready(())
+            } else {
+                // SAFETY: Accessing the interior of the UnsafeCell is safe because
+                // it occurs inside a critical section, when we are guaranteed to be
+                // the only holder of the mutex.
+                critical_section(|cs| unsafe {
+                    *self.0.producer_waker.borrow(cs).get() = Some(ctx.waker().clone())
+                });
+                Pending
+            }
+        })
     }
 
     pub fn is_full(&self) -> bool {

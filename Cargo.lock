@@ -341,7 +341,6 @@ dependencies = [
  "rtic",
  "rtic-monotonics",
  "rtic-sync",
- "spin",
  "stm32-usbd",
  "stm32l4xx-hal",
  "thiserror-core",
@@ -620,12 +619,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,6 +654,7 @@ dependencies = [
  "bxcan",
  "cast",
  "cortex-m",
+ "defmt",
  "embedded-dma",
  "embedded-hal 0.2.7",
  "fugit",
