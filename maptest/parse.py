@@ -7,6 +7,8 @@ import math
 from tkinter import *
 from tkinter import ttk
 
+MAP_SCALE = 1000
+
 def fetch():
 	# query = overpassQueryBuilder(bbox=(40.44020,-79.94743,40.44706,-79.93284), elementType='way', out='body')
 	query = '(way[highway](40.4402,-79.94743,40.44706,-79.93284); >;); out body;'
@@ -18,14 +20,6 @@ def fetch():
 			m = pickle.load(f)
 	except FileNotFoundError:
 		overpass = Overpass()
-
-		_ = '''
-		(
-			node(40.44020,-79.94743,40.44706,-79.93284);
-			<;
-		);
-		out meta;
-		'''
 
 		m = overpass.query(query)
 
@@ -46,6 +40,15 @@ def ll_to_wmc(lat, lon):
 	x = (1 / (2 * math.pi)) * (math.pi + lon)
 	y = (1 / (2 * math.pi)) * (math.pi - math.log(math.tan((math.pi / 4) + lat / 2.0)))
 	return x, y
+
+def wmc_to_ll(x, y):
+	lat = 2.0 * (math.atan(math.exp(math.pi - 2 * math.pi * y)) - math.pi / 4)
+	lon = 2.0 * math.pi * x - math.pi
+
+	lat = math.degrees(lat)
+	lon = math.degrees(lon)
+
+	return lat, lon
 
 nodes = { n.id(): ll_to_wmc(n.lat(), n.lon()) for n in m.nodes() }
 

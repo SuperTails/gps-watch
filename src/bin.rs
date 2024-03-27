@@ -272,11 +272,11 @@ mod app {
         pin_down.make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
         pin_center.make_interrupt_source(&mut cx.device.SYSCFG, &mut rcc.apb2);
 
-        pin_left.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
-        pin_right.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
-        pin_up.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
-        pin_down.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
-        pin_center.trigger_on_edge(&mut cx.device.EXTI, Edge::Falling);
+        pin_left.trigger_on_edge(&mut cx.device.EXTI, Edge::RisingFalling);
+        pin_right.trigger_on_edge(&mut cx.device.EXTI, Edge::RisingFalling);
+        pin_up.trigger_on_edge(&mut cx.device.EXTI, Edge::RisingFalling);
+        pin_down.trigger_on_edge(&mut cx.device.EXTI, Edge::RisingFalling);
+        pin_center.trigger_on_edge(&mut cx.device.EXTI, Edge::RisingFalling);
 
         pin_left.enable_interrupt(&mut cx.device.EXTI);
         pin_right.enable_interrupt(&mut cx.device.EXTI);
@@ -588,9 +588,8 @@ mod app {
 
         let clock_font = FontRenderer::new::<fonts::u8g2_font_logisoso42_tr>();
 
-        /*
-        static NODES: [[f32; 2]; 2806] = include!("../formatted_nodes.txt");
-        static LENGTHS: [usize; 588] = include!("../formatted_lengths.txt");
+        static NODES: [[f32; 2]; 2806] = include!("../maptest/formatted_nodes.txt");
+        static LENGTHS: [usize; 588] = include!("../maptest/formatted_lengths.txt");
 
         const MIN_X: f32 = 0.27792380555555557;
         const MIN_Y: f32 = 0.3769527127520212;
@@ -599,13 +598,24 @@ mod app {
         const MAX_Y: f32 = 0.3769777514380456;
 
         const SPAN: f32 = 2.5038686024436707e-05;
-        */
 
         let mut i = Wrapping(0u8);
         let mut indicator = false;
 
+        let mut map_mode = false;
+    
         while let Ok(event) = redraw_events.recv().await {
             debug!("display_task loop, got event {}", event);
+
+            match event {
+                RedrawEvent::Button(btn) => {
+                    info!("{}", btn);
+                    map_mode = !map_mode;
+                }
+                RedrawEvent::Time => {},
+                RedrawEvent::Location => {},
+                RedrawEvent::Battery => {},
+            }
 
             let mut dbg_txt = FmtBuf::<64>::new();
             let mut time_buf = FmtBuf::<8>::new();
@@ -637,55 +647,75 @@ mod app {
 
             cx.shared.display.lock(|display| {
                 display.clear();
-                // Debug infos
-                // TextBox::new(
-                //     dbg_txt.as_str().unwrap(),
-                //     Rectangle {
-                //         top_left: Point { x: 5, y: 135 },
-                //         size: Size {
-                //             width: 350,
-                //             height: 100,
-                //         },
-                //     },
-                //     MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
-                // )
-                // .draw(display)
-                // .unwrap();
-                Text::new(
-                    dbg_txt.as_str().unwrap(),
-                    Point { x: 5, y: 135 },
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
-                )
-                .draw(display)
-                .unwrap();
 
-                /*
-                let mut i = 0;
-                for length in LENGTHS {
-                    for j in i..(i + length - 1) {
-                        let [x0, y0] = NODES[j];
-                        let [x1, y1] = NODES[j + 1];
+                if map_mode {
+                    let mut i = 0;
+                    for length in LENGTHS {
+                        for j in i..(i + length - 1) {
+                            let [x0, y0] = NODES[j];
+                            let [x1, y1] = NODES[j + 1];
 
-                        let [x0, y0] = [(x0 - MIN_X) / SPAN, (y0 - MIN_Y) / SPAN];
-                        let [x1, y1] = [(x1 - MIN_X) / SPAN, (y1 - MIN_Y) / SPAN];
+                            let [x0, y0] = [(x0 - MIN_X) / SPAN, (y0 - MIN_Y) / SPAN];
+                            let [x1, y1] = [(x1 - MIN_X) / SPAN, (y1 - MIN_Y) / SPAN];
 
-                        embedded_graphics::primitives::Line {
-                            start: Point { x: (x0 * 128.0) as i32, y: (y0 * 128.0) as i32 },
-                            end:   Point { x: (x1 * 128.0) as i32, y: (y1 * 128.0) as i32 },
+                            embedded_graphics::primitives::Line {
+                                start: Point { x: (x0 * 128.0) as i32, y: (y0 * 128.0) as i32 },
+                                end:   Point { x: (x1 * 128.0) as i32, y: (y1 * 128.0) as i32 },
+                            }
+                            .into_styled(
+                                PrimitiveStyleBuilder::new()
+                                    .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
+                                    .stroke_color(BinaryColor::On)
+                                    .stroke_width(4)
+                                    .build(),
+                            )
+                            .draw(display)
+                            .unwrap();
                         }
-                        .into_styled(
-                            PrimitiveStyleBuilder::new()
-                                .stroke_alignment(embedded_graphics::primitives::StrokeAlignment::Inside)
-                                .stroke_color(BinaryColor::On)
-                                .stroke_width(4)
-                                .build(),
-                        )
-                        .draw(display)
-                        .unwrap();
+                        i += length;
                     }
-                    i += length;
+                } else {
+                    // Debug infos
+                    // TextBox::new(
+                    //     dbg_txt.as_str().unwrap(),
+                    //     Rectangle {
+                    //         top_left: Point { x: 5, y: 135 },
+                    //         size: Size {
+                    //             width: 350,
+                    //             height: 100,
+                    //         },
+                    //     },
+                    //     MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                    // )
+                    // .draw(display)
+                    // .unwrap();
+                    Text::new(
+                        dbg_txt.as_str().unwrap(),
+                        Point { x: 5, y: 135 },
+                        MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                    )
+                    .draw(display)
+                    .unwrap();
+
+                    clock_font
+                        .render_aligned(
+                            time_buf.as_str().unwrap(),
+                            Point { x: 64, y: 20 },
+                            u8g2_fonts::types::VerticalPosition::Top,
+                            u8g2_fonts::types::HorizontalAlignment::Center,
+                            u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
+                            display,
+                        )
+                        .unwrap();
+
+                    Text::new(
+                        coords_buf.as_str().unwrap(),
+                        Point { x: 20, y: 80 },
+                        MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
+                    )
+                    .draw(display)
+                    .unwrap();
                 }
-                */
 
                 // Show indicator for when screen is redrawn
                 #[cfg(debug_assertions)]
@@ -706,24 +736,6 @@ mod app {
                     .unwrap();
                 }
 
-                clock_font
-                    .render_aligned(
-                        time_buf.as_str().unwrap(),
-                        Point { x: 64, y: 20 },
-                        u8g2_fonts::types::VerticalPosition::Top,
-                        u8g2_fonts::types::HorizontalAlignment::Center,
-                        u8g2_fonts::types::FontColor::Transparent(BinaryColor::On),
-                        display,
-                    )
-                    .unwrap();
-
-                Text::new(
-                    coords_buf.as_str().unwrap(),
-                    Point { x: 20, y: 80 },
-                    MonoTextStyle::new(&FONT_6X12, BinaryColor::On),
-                )
-                .draw(display)
-                .unwrap();
 
                 display.flush();
             });
