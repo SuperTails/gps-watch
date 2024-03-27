@@ -10,7 +10,7 @@ use core::sync::atomic::{self, Ordering};
 use embedded_dma::StaticWriteBuffer;
 use stable_deref_trait::StableDeref;
 
-use crate::hal::serial::{self, Write};
+use embedded_io::{Write, Read, ErrorType};
 
 use crate::dma::{
     dma1, CircBuffer, DMAFrame, FrameReader, FrameSender, Receive, RxDma, TransferPayload,
@@ -463,9 +463,11 @@ macro_rules! hal {
                 // END LANDHOPPER CHANGES
             }
 
-            impl<PINS> serial::Read<u8> for Serial<pac::$USARTX, PINS> {
+            impl<PINS> ErrorType for Serial<pac::$USARTX, PINS> {
                 type Error = Error;
+            }
 
+            impl<PINS> Read<u8> for Serial<pac::$USARTX, PINS> {
                 fn read(&mut self) -> nb::Result<u8, Error> {
                     let mut rx: Rx<pac::$USARTX> = Rx {
                         _usart: PhantomData,
@@ -474,9 +476,7 @@ macro_rules! hal {
                 }
             }
 
-            impl serial::Read<u8> for Rx<pac::$USARTX> {
-                type Error = Error;
-
+            impl Read<u8> for Rx<pac::$USARTX> {
                 fn read(&mut self) -> nb::Result<u8, Error> {
                     self.check_for_error()?;
 

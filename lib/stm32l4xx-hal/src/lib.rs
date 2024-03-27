@@ -134,7 +134,6 @@ pub mod dma;
 pub mod dmamux;
 pub mod flash;
 pub mod gpio;
-pub mod i2c;
 pub mod lptimer;
 #[cfg(all(
     feature = "otg_fs",

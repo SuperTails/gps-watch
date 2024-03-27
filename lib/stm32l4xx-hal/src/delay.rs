@@ -5,7 +5,7 @@ use cortex_m::asm;
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m::peripheral::SYST;
 
-use crate::hal::blocking::delay::{DelayMs, DelayUs};
+use crate::hal::delay::DelayNs;
 use crate::rcc::Clocks;
 use crate::time::Hertz;
 

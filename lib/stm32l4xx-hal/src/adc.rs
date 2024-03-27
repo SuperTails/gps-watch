@@ -10,10 +10,7 @@ use crate::{
     dma::{dma1, Event as DMAEvent, RxDma, Transfer, TransferPayload, W},
     dmamux::{DmaInput, DmaMux},
     gpio::{self, Analog},
-    hal::{
-        adc::{Channel as EmbeddedHalChannel, OneShot},
-        blocking::delay::DelayUs,
-    },
+    hal::delay::DelayNs,
     pac,
     rcc::{Enable, Reset, AHB2, CCIPR},
     signature::{VrefCal, VtempCalHigh, VtempCalLow, VDDA_CALIB_MV},
@@ -128,7 +125,7 @@ impl ADC {
         common: ADC_COMMON,
         ahb: &mut AHB2,
         ccipr: &mut CCIPR,
-        delay: &mut impl DelayUs<u32>,
+        delay: &mut impl DelayNs,
     ) -> Self {
         // Enable peripheral
         ADC1::enable(ahb);
@@ -188,7 +185,7 @@ impl ADC {
     }
 
     /// Enable and get the `Vref`
-    pub fn enable_vref(&mut self, delay: &mut impl DelayUs<u32>) -> Vref {
+    pub fn enable_vref(&mut self, delay: &mut impl DelayNs) -> Vref {
         self.common.ccr.modify(|_, w| w.vrefen().set_bit());
 
         // "Table 24. Embedded internal voltage reference" states that it takes a maximum of 12 us
@@ -199,7 +196,7 @@ impl ADC {
     }
 
     /// Enable and get the `Temperature`
-    pub fn enable_temperature(&mut self, delay: &mut impl DelayUs<u32>) -> Temperature {
+    pub fn enable_temperature(&mut self, delay: &mut impl DelayNs) -> Temperature {
         self.common.ccr.modify(|_, w| w.ch17sel().set_bit());
 
         // FIXME: This note from the reference manual is currently not possible
@@ -435,13 +432,12 @@ impl ADC {
     }
 }
 
-impl<C> OneShot<ADC, u16, C> for ADC
+// impl<C> OneShot<ADC, u16, C> for ADC
+impl<C> ADC
 where
     C: Channel,
 {
-    type Error = Infallible;
-
-    fn read(&mut self, channel: &mut C) -> nb::Result<u16, Self::Error> {
+    fn read(&mut self, channel: &mut C) -> nb::Result<u16, Infallible> {
         self.configure_sequence(channel, Sequence::One, self.sample_time);
 
         self.start_conversion();
@@ -639,7 +635,7 @@ impl Default for SampleTime {
 }
 
 /// Implemented for all types that represent ADC channels
-pub trait Channel: EmbeddedHalChannel<ADC, ID = u8> {
+pub trait Channel {
     fn set_sample_time(&mut self, adc: &ADC1, sample_time: SampleTime);
 }
 
@@ -653,14 +649,6 @@ macro_rules! adc_pins {
         )*
     ) => {
         $(
-            impl EmbeddedHalChannel<ADC> for $pin {
-                type ID = u8;
-
-                fn channel() -> Self::ID {
-                    $id
-                }
-            }
-
             impl Channel for $pin {
                 fn set_sample_time(&mut self,
                     adc: &ADC1,
