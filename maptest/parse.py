@@ -7,37 +7,12 @@ import math
 from tkinter import *
 from tkinter import ttk
 
-def fetch():
-	# query = overpassQueryBuilder(bbox=(40.44020,-79.94743,40.44706,-79.93284), elementType='way', out='body')
-	query = '(way[highway](40.4402,-79.94743,40.44706,-79.93284); >;); out body;'
-	print(query)
+COORDS = 40.4429814, -79.9413792
+ZOOM = 15
 
-
-	try:
-		with open('cached.pickle', 'rb') as f:
-			m = pickle.load(f)
-	except FileNotFoundError:
-		overpass = Overpass()
-
-		_ = '''
-		(
-			node(40.44020,-79.94743,40.44706,-79.93284);
-			<;
-		);
-		out meta;
-		'''
-
-		m = overpass.query(query)
-
-		with open('cached.pickle', 'wb') as f:
-			pickle.dump(m, f)
-	
-	return m
-
-m = fetch()
-
-print('Nodes: ', m.countNodes())
-print('Ways:  ', m.countWays())
+# ll: lat/lon in degrees
+# wmc: web mercator coordinate, x,y from 0-1
+# tile: xyz tile index, x,y from 0 to 2^z-1
 
 def ll_to_wmc(lat, lon):
 	lat = math.radians(lat)
@@ -47,10 +22,60 @@ def ll_to_wmc(lat, lon):
 	y = (1 / (2 * math.pi)) * (math.pi - math.log(math.tan((math.pi / 4) + lat / 2.0)))
 	return x, y
 
+def wmc_to_tile(x, y, z):
+	return math.floor(x * 2**z), math.floor(y * 2**z)
+
+def ll_to_tile(lat, lon, z):
+	return wmc_to_tile(*ll_to_wmc(lat, lon), z)
+
+def tile_to_wmc(x, y, z):
+	return x / 2**z, y / 2**z
+
+def tile_bounds_wmc(x, y, z):
+	return *tile_to_wmc(x, y, z), *tile_to_wmc(x+1, y+1, z)
+
+def tile_bounds_ll(x, y, z):
+	west, north, east, south = tile_bounds_wmc(x, y, z)
+	return *wmc_to_ll(west, north), *wmc_to_ll(east, south)
+
+def ll_bounds_ll(lat, lon, z):
+	return tile_bounds_ll(*ll_to_tile(lat, lon, z), z)
+
+def wmc_to_ll(x, y):
+	lat = 2.0 * (math.atan(math.exp(math.pi - 2 * math.pi * y)) - math.pi / 4)
+	lon = 2.0 * math.pi * x - math.pi
+
+	lat = math.degrees(lat)
+	lon = math.degrees(lon)
+
+	return lat, lon
+
+query_template = """
+(
+  way[highway~"primary|secondary|tertiary|residential|service|unclassified|steps"]({bbox})(if: length() > 5);
+  >;
+  way[highway=footway][footway!~"sidewalk|crossing"]({bbox})(if: length() > 5);
+  >;
+); out body;
+"""
+
+def fetch(lat, lon):
+	x, y = ll_to_tile(lat, lon, ZOOM)
+	overpass = Overpass()
+
+	north, west, south, east = tile_bounds_ll(x, y, ZOOM)
+	query = query_template.format(bbox=f"{south},{west},{north},{east}")
+	return overpass.query(query)
+
+
+m = fetch(*COORDS)
+
+print('Nodes: ', m.countNodes())
+print('Ways:  ', m.countWays())
+
 nodes = { n.id(): ll_to_wmc(n.lat(), n.lon()) for n in m.nodes() }
 
-min_x, min_y = ll_to_wmc(40.44706,-79.94743)
-max_x, max_y = ll_to_wmc(40.4402,-79.93284)
+min_x, min_y, max_x, max_y = tile_bounds_wmc(*ll_to_tile(*COORDS, ZOOM), ZOOM)
 
 assert(min_x <= max_x)
 assert(min_y <= max_y)
@@ -63,7 +88,7 @@ frm.grid()
 ttk.Label(frm, text="Hello World!").grid(column=0, row=1)
 ttk.Button(frm, text="Quit", command=root.destroy).grid(column=1, row=1)
 
-SIZE = 64
+SIZE = 128
 
 canvas = Canvas(frm, width=SIZE, height=SIZE)
 canvas.grid(column=0,row=0)
@@ -94,7 +119,7 @@ for way in m.ways():
 	for x, y in node_coords:
 		expanded_nodes.append((x, y))
 		formatted_nodes += f'[{x}, {y}], '
-	
+
 	lengths.append(len(node_coords))
 	formatted_lengths += f'{len(node_coords)}, '
 
