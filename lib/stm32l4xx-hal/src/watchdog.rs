@@ -1,7 +1,7 @@
 //! Watchdog peripherals
 
 use crate::{
-    hal::watchdog::{Watchdog, WatchdogEnable},
+    //hal::watchdog::{Watchdog, WatchdogEnable},
     stm32::{DBGMCU, IWDG},
     time::MilliSeconds,
 };
@@ -123,7 +123,7 @@ impl IndependentWatchdog {
     }
 }
 
-impl WatchdogEnable for IndependentWatchdog {
+/*impl WatchdogEnable for IndependentWatchdog {
     type Time = MilliSeconds;
 
     fn start<T: Into<Self::Time>>(&mut self, period: T) {
@@ -137,4 +137,4 @@ impl Watchdog for IndependentWatchdog {
     fn feed(&mut self) {
         self.iwdg.kr.write(|w| unsafe { w.key().bits(KR_RELOAD) });
     }
-}
+}*/

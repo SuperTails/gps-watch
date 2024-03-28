@@ -1,5 +1,5 @@
 use defmt::Format;
-use stm32l4xx_hal::{gpio::ExtiPin, prelude::InputPin};
+use stm32l4xx_hal::{gpio::ExtiPin, hal::digital::InputPin};
 
 pub struct Joystick<L, R, U, D, C> {
     pub pin_left: L,

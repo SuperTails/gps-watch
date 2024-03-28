@@ -1,6 +1,6 @@
 //! Timers
 
-use crate::hal::timer::{CountDown, Periodic};
+//use crate::hal::timer::{CountDown, Periodic};
 // missing PAC support
 /*
 #[cfg(any(
@@ -60,7 +60,7 @@ use crate::stm32::{TIM17, TIM4, TIM5};
 // LPTIM ("Low power Timer") -> no impl
 
 use cast::{u16, u32};
-use void::Void;
+//use void::Void;
 
 use crate::rcc::{Clocks, Enable, Reset, APB1R1, APB2};
 use crate::time::Hertz;
@@ -82,9 +82,9 @@ pub enum Event {
 macro_rules! hal {
     ($($TIM:ident: ($tim:ident, $frname:ident, $apb:ident, $width:ident),)+) => {
         $(
-            impl Periodic for Timer<$TIM> {}
+            //impl Periodic for Timer<$TIM> {}
 
-            impl CountDown for Timer<$TIM> {
+            /*impl CountDown for Timer<$TIM> {
                 type Time = Hertz;
 
                 // NOTE(allow) `w.psc().bits()` is safe for TIM{6,7} but not for TIM{2,3,4} due to
@@ -126,9 +126,42 @@ macro_rules! hal {
                         Ok(())
                     }
                 }
-            }
+            }*/
+
+
 
             impl Timer<$TIM> {
+                // NOTE(allow) `w.psc().bits()` is safe for TIM{6,7} but not for TIM{2,3,4} due to
+                // some SVD omission
+                #[allow(unused_unsafe)]
+                pub fn start<T>(&mut self, timeout: T)
+                where
+                    T: Into<Hertz>,
+                {
+                    // pause
+                    self.tim.cr1.modify(|_, w| w.cen().clear_bit());
+
+                    self.timeout = timeout.into();
+                    let ticks = self.clocks.pclk1() / self.timeout; // TODO check pclk that timer is on
+                    let psc = u16((ticks - 1) / (1 << 16)).unwrap();
+
+                    self.tim.psc.write(|w| unsafe { w.psc().bits(psc) });
+
+                    let arr = u16(ticks / u32(psc + 1)).unwrap();
+
+                    self.tim.arr.write(|w| unsafe { w.bits(u32(arr)) });
+
+                    // Trigger an update event to load the prescaler value to the clock
+                    self.tim.egr.write(|w| w.ug().set_bit());
+                    // The above line raises an update event which will indicate
+                    // that the timer is already finished. Since this is not the case,
+                    // it should be cleared
+                    self.clear_update_interrupt_flag();
+
+                    // start counter
+                    self.tim.cr1.modify(|_, w| w.cen().set_bit());
+                }
+
                 // XXX(why not name this `new`?) bummer: constructors need to have different names
                 // even if the `$TIM` are non overlapping (compare to the `free` function below
                 // which just works)

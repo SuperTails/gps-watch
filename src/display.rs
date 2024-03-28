@@ -1,7 +1,7 @@
 use core::convert::Infallible;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
 use stm32l4xx_hal::{
-    hal::{blocking::spi::Write as SpiWrite, digital::v2::OutputPin},
+    hal::{spi::SpiBus, digital::OutputPin},
     spi,
 };
 
@@ -31,7 +31,7 @@ struct SpiTransaction<'a, SPI, CS> {
 
 impl<'a, SPI, CS> SpiTransaction<'a, SPI, CS>
 where
-    SPI: SpiWrite<u8, Error = spi::Error>,
+    SPI: SpiBus<u8, Error = spi::Error>,
     CS: OutputPin<Error = Infallible>,
 {
     fn start(disp: &'a mut SharpMemDisplayDriver<SPI, CS>, command: u8) -> Self {
@@ -64,7 +64,7 @@ pub struct SharpMemDisplayDriver<SPI, CS> {
 
 impl<SPI, CS> SharpMemDisplayDriver<SPI, CS>
 where
-    SPI: SpiWrite<u8, Error = spi::Error>,
+    SPI: SpiBus<u8, Error = spi::Error>,
     CS: OutputPin<Error = Infallible>,
 {
     pub fn new(spi: SPI, cs: CS) -> Self {
@@ -103,7 +103,7 @@ pub struct SharpMemDisplay<SPI, CS> {
 
 impl<SPI, CS> SharpMemDisplay<SPI, CS>
 where
-    SPI: SpiWrite<u8, Error = spi::Error>,
+    SPI: SpiBus<u8, Error = spi::Error>,
     CS: OutputPin<Error = Infallible>,
 {
     pub fn new(spi: SPI, cs: CS) -> Self {
@@ -172,7 +172,7 @@ where
 
 impl<SPI, CS> DrawTarget for SharpMemDisplay<SPI, CS>
 where
-    SPI: SpiWrite<u8, Error = spi::Error>,
+    SPI: SpiBus<u8, Error = spi::Error>,
     CS: OutputPin<Error = Infallible>,
 {
     type Color = BinaryColor;

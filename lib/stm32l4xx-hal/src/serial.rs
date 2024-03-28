@@ -2,7 +2,6 @@
 //!
 //! This module support both polling and interrupt based accesses to the serial peripherals.
 
-use core::fmt;
 use core::marker::PhantomData;
 use core::ops::DerefMut;
 use core::ptr;
@@ -10,7 +9,7 @@ use core::sync::atomic::{self, Ordering};
 use embedded_dma::StaticWriteBuffer;
 use stable_deref_trait::StableDeref;
 
-use embedded_io::{Write, Read, ErrorType};
+use embedded_io::{Write, WriteReady, Read, ReadReady, ErrorType};
 
 use crate::dma::{
     dma1, CircBuffer, DMAFrame, FrameReader, FrameSender, Receive, RxDma, TransferPayload,
@@ -72,6 +71,17 @@ pub enum Error {
     Overrun,
     /// Parity check error
     Parity,
+}
+
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        match self {
+            Error::Framing => embedded_io::ErrorKind::InvalidData,
+            Error::Noise   => embedded_io::ErrorKind::InvalidData,
+            Error::Parity  => embedded_io::ErrorKind::InvalidData,
+            Error::Overrun => embedded_io::ErrorKind::Other,
+        }
+    }
 }
 
 /// USART parity settings
@@ -467,36 +477,63 @@ macro_rules! hal {
                 type Error = Error;
             }
 
-            impl<PINS> Read<u8> for Serial<pac::$USARTX, PINS> {
-                fn read(&mut self) -> nb::Result<u8, Error> {
+            impl<PINS> ReadReady for Serial<pac::$USARTX, PINS> {
+                fn read_ready(&mut self) -> Result<bool, Self::Error> {
                     let mut rx: Rx<pac::$USARTX> = Rx {
                         _usart: PhantomData,
                     };
-                    rx.read()
+                    rx.read_ready()
                 }
             }
 
-            impl Read<u8> for Rx<pac::$USARTX> {
-                fn read(&mut self) -> nb::Result<u8, Error> {
+            impl<PINS> Read for Serial<pac::$USARTX, PINS> {
+                fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Error> {
+                    let mut rx: Rx<pac::$USARTX> = Rx {
+                        _usart: PhantomData,
+                    };
+                    rx.read(bytes)
+                }
+            }
+
+            impl ErrorType for Rx<pac::$USARTX> {
+                type Error = Error;
+            }
+
+            impl ReadReady for Rx<pac::$USARTX> {
+                fn read_ready(&mut self) -> Result<bool, Self::Error> {
                     self.check_for_error()?;
 
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
-                    if isr.rxne().bit_is_set() {
-                        // NOTE(read_volatile) see `write_volatile` below
-                        return Ok(unsafe {
-                            ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)
-                        });
-                    }
-
-                    Err(nb::Error::WouldBlock)
+                    Ok(isr.rxne().bit_is_set())
                 }
             }
 
-            impl<PINS> serial::Write<u8> for Serial<pac::$USARTX, PINS> {
-                type Error = Error;
+            impl Read for Rx<pac::$USARTX> {
+                fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Error> {
+                    if let Some(byte) = bytes.get_mut(0) {
+                        loop {
+                            self.check_for_error()?;
 
+                            // NOTE(unsafe) atomic read with no side effects
+                            let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
+
+                            if isr.rxne().bit_is_set() {
+                                // NOTE(read_volatile) see `write_volatile` below
+                                *byte = unsafe {
+                                    ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)
+                                };
+                                return Ok(1);
+                            }
+                        }
+                    } else {
+                        Ok(0)
+                    }
+                }
+            }
+
+            /*impl<PINS> embedded_io::Write<u8> for Serial<pac::$USARTX, PINS> {
                 fn flush(&mut self) -> nb::Result<(), Error> {
                     let mut tx: Tx<pac::$USARTX> = Tx {
                         _usart: PhantomData,
@@ -504,7 +541,7 @@ macro_rules! hal {
                     tx.flush()
                 }
 
-                fn write(&mut self, byte: u8) -> nb::Result<(), Error> {
+                fn write(&mut self, byte: &[u8]) -> nb::Result<(), Error> {
                     let mut tx: Tx<pac::$USARTX> = Tx {
                         _usart: PhantomData,
                     };
@@ -512,12 +549,11 @@ macro_rules! hal {
                 }
             }
 
-            impl serial::Write<u8> for Tx<pac::$USARTX> {
+            impl embedded_io::Write<u8> for Tx<pac::$USARTX> {
                 // NOTE(Void) See section "29.7 USART interrupts"; the only possible errors during
                 // transmission are: clear to send (which is disabled in this case) errors and
                 // framing errors (which only occur in SmartCard mode); neither of these apply to
                 // our hardware configuration
-                type Error = Error;
 
                 fn flush(&mut self) -> nb::Result<(), Error> {
                     // NOTE(unsafe) atomic read with no side effects
@@ -549,6 +585,7 @@ macro_rules! hal {
 
             impl embedded_hal::blocking::serial::write::Default<u8>
                 for Tx<pac::$USARTX> {}
+            */
 
             pub type $rxdma = RxDma<Rx<pac::$USARTX>, $dmarxch>;
             pub type $txdma = TxDma<Tx<pac::$USARTX>, $dmatxch>;
@@ -1165,93 +1202,149 @@ macro_rules! lpuart_hal {
                 }
             }
 
-            impl<PINS> serial::Read<u8> for Serial<pac::$USARTX, PINS> {
+            impl ErrorType for Rx<pac::$USARTX> {
+                // NOTE(Void) See section "29.7 USART interrupts"; the only possible errors during
+                // transmission are: clear to send (which is disabled in this case) errors and
+                // framing errors (which only occur in SmartCard mode); neither of these apply to
+                // our hardware configuration
                 type Error = Error;
+            }
 
-                fn read(&mut self) -> nb::Result<u8, Error> {
+            impl<PINS> ReadReady for Serial<pac::$USARTX, PINS> {
+                fn read_ready(&mut self) -> Result<bool, Self::Error> {
                     let mut rx: Rx<pac::$USARTX> = Rx {
                         _usart: PhantomData,
                     };
-                    rx.read()
+                    rx.read_ready()
                 }
             }
 
-            impl serial::Read<u8> for Rx<pac::$USARTX> {
-                type Error = Error;
+            impl<PINS> Read for Serial<pac::$USARTX, PINS> {
+                fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Error> {
+                    let mut rx: Rx<pac::$USARTX> = Rx {
+                        _usart: PhantomData,
+                    };
+                    rx.read(bytes)
+                }
+            }
 
-                fn read(&mut self) -> nb::Result<u8, Error> {
+            impl ReadReady for Rx<pac::$USARTX> {
+                fn read_ready(&mut self) -> Result<bool, Self::Error> {
                     self.check_for_error()?;
 
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
-                    if isr.rxne().bit_is_set() {
-                        // NOTE(read_volatile) see `write_volatile` below
-                        return Ok(unsafe {
-                            ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)
-                        });
-                    }
-
-                    Err(nb::Error::WouldBlock)
+                    Ok(isr.rxne().bit_is_set())
                 }
             }
 
-            impl<PINS> serial::Write<u8> for Serial<pac::$USARTX, PINS> {
-                type Error = Error;
 
-                fn flush(&mut self) -> nb::Result<(), Error> {
+            impl Read for Rx<pac::$USARTX> {
+                fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Error> {
+                    if let Some(byte) = bytes.get_mut(0) {
+                        loop {
+                            self.check_for_error()?;
+
+                            // NOTE(unsafe) atomic read with no side effects
+                            let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
+
+                            if isr.rxne().bit_is_set() {
+                                // NOTE(read_volatile) see `write_volatile` below
+                                *byte = unsafe {
+                                    ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)
+                                };
+                                return Ok(1);
+                            }
+                        }
+                    } else {
+                        Ok(0)
+                    }
+                }
+            }
+
+            impl<PINS> ErrorType for Serial<pac::$USARTX, PINS> {
+                // NOTE(Void) See section "29.7 USART interrupts"; the only possible errors during
+                // transmission are: clear to send (which is disabled in this case) errors and
+                // framing errors (which only occur in SmartCard mode); neither of these apply to
+                // our hardware configuration
+                type Error = Error;
+            }
+
+            impl<PINS> WriteReady for Serial<pac::$USARTX, PINS> {
+                fn write_ready(&mut self) -> Result<bool, Self::Error> {
+                    let mut tx: Tx<pac::$USARTX> = Tx {
+                        _usart: PhantomData,
+                    };
+                    tx.write_ready()
+                }
+            }
+
+            impl<PINS> Write for Serial<pac::$USARTX, PINS> {
+                fn flush(&mut self) -> Result<(), Error> {
                     let mut tx: Tx<pac::$USARTX> = Tx {
                         _usart: PhantomData,
                     };
                     tx.flush()
                 }
 
-                fn write(&mut self, byte: u8) -> nb::Result<(), Error> {
+                fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
                     let mut tx: Tx<pac::$USARTX> = Tx {
                         _usart: PhantomData,
                     };
-                    tx.write(byte)
+                    tx.write(bytes)
                 }
             }
 
-            impl serial::Write<u8> for Tx<pac::$USARTX> {
+            impl ErrorType for Tx<pac::$USARTX> {
                 // NOTE(Void) See section "29.7 USART interrupts"; the only possible errors during
                 // transmission are: clear to send (which is disabled in this case) errors and
                 // framing errors (which only occur in SmartCard mode); neither of these apply to
                 // our hardware configuration
                 type Error = Error;
+            }
 
-                fn flush(&mut self) -> nb::Result<(), Error> {
+            impl WriteReady for Tx<pac::$USARTX> {
+                fn write_ready(&mut self) -> Result<bool, Self::Error> {
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
-                    if isr.tc().bit_is_set() {
-                        Ok(())
-                    } else {
-                        Err(nb::Error::WouldBlock)
-                    }
-                }
-
-                fn write(&mut self, byte: u8) -> nb::Result<(), Error> {
-                    // NOTE(unsafe) atomic read with no side effects
-                    let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
-
-                    if isr.txe().bit_is_set() {
-                        // NOTE(unsafe) atomic write to stateless register
-                        // NOTE(write_volatile) 8-bit write that's not possible through the svd2rust API
-                        unsafe {
-                            ptr::write_volatile(&(*pac::$USARTX::ptr()).tdr as *const _ as *mut _, byte)
-                        }
-                        Ok(())
-                    } else {
-                        Err(nb::Error::WouldBlock)
-                    }
+                    Ok(isr.txe().bit_is_set())
                 }
             }
 
+            impl Write for Tx<pac::$USARTX> {
+                fn flush(&mut self) -> Result<(), Error> {
+                    loop {
+                        // NOTE(unsafe) atomic read with no side effects
+                        let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
-            impl embedded_hal::blocking::serial::write::Default<u8>
-                for Tx<pac::$USARTX> {}
+                        if isr.tc().bit_is_set() {
+                            return Ok(());
+                        }
+                    }
+                }
+
+                fn write(&mut self, bytes: &[u8]) -> Result<usize, Error> {
+                    if let Some(byte) = bytes.get(0) {
+                        loop {
+                            // NOTE(unsafe) atomic read with no side effects
+                            let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
+
+                            if isr.txe().bit_is_set() {
+                                // NOTE(unsafe) atomic write to stateless register
+                                // NOTE(write_volatile) 8-bit write that's not possible through the svd2rust API
+                                unsafe {
+                                    ptr::write_volatile(&(*pac::$USARTX::ptr()).tdr as *const _ as *mut _, byte)
+                                }
+                                return Ok(1)
+                            }
+                        }
+                    } else {
+                        Ok(0)
+                    }
+                }
+            }
 
             pub type $rxdma = RxDma<Rx<pac::$USARTX>, $dmarxch>;
             pub type $txdma = TxDma<Tx<pac::$USARTX>, $dmatxch>;
@@ -1557,9 +1650,10 @@ lpuart_hal! {
 }
 // END LANDHOPPER CHANGES
 
+/*
 impl<USART, PINS> fmt::Write for Serial<USART, PINS>
 where
-    Serial<USART, PINS>: crate::hal::serial::Write<u8>,
+    Serial<USART, PINS>: embedded_io::Write,
 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let _ = s
@@ -1573,7 +1667,7 @@ where
 
 impl<USART> fmt::Write for Tx<USART>
 where
-    Tx<USART>: crate::hal::serial::Write<u8>,
+    Tx<USART>: embedded_io::Write<Error,
 {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let _ = s
@@ -1584,6 +1678,7 @@ where
         Ok(())
     }
 }
+*/
 
 /// Marks pins as being as being TX pins for the given USART instance
 pub trait TxPin<Instance>: private::SealedTx {}

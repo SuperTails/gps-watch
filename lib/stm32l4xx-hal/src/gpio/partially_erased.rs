@@ -1,3 +1,5 @@
+use embedded_hal::digital::ErrorType;
+
 use super::*;
 
 pub type PEPin<MODE, const P: char> = PartiallyErasedPin<MODE, P>;
@@ -80,7 +82,7 @@ impl<MODE, const P: char> PartiallyErasedPin<Output<MODE>, P> {
 
     #[inline(always)]
     pub fn toggle(&mut self) {
-        if self.is_set_low() {
+        if self.is_set_low().unwrap() {
             self.set_high()
         } else {
             self.set_low()
@@ -88,9 +90,11 @@ impl<MODE, const P: char> PartiallyErasedPin<Output<MODE>, P> {
     }
 }
 
-impl<MODE, const P: char> OutputPin for PartiallyErasedPin<Output<MODE>, P> {
+impl<MODE, const P: char> ErrorType for PartiallyErasedPin<MODE, P> {
     type Error = Infallible;
+}
 
+impl<MODE, const P: char> OutputPin for PartiallyErasedPin<Output<MODE>, P> {
     #[inline(always)]
     fn set_high(&mut self) -> Result<(), Self::Error> {
         self.set_high();
@@ -106,25 +110,23 @@ impl<MODE, const P: char> OutputPin for PartiallyErasedPin<Output<MODE>, P> {
 
 impl<MODE, const P: char> StatefulOutputPin for PartiallyErasedPin<Output<MODE>, P> {
     #[inline(always)]
-    fn is_set_high(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_set_high())
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_set_high(self))
     }
 
     #[inline(always)]
-    fn is_set_low(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_set_low())
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_set_low(self))
     }
 }
 
-impl<MODE, const P: char> ToggleableOutputPin for PartiallyErasedPin<Output<MODE>, P> {
-    type Error = Infallible;
-
+/*impl<MODE, const P: char> ToggleableOutputPin for PartiallyErasedPin<Output<MODE>, P> {
     #[inline(always)]
     fn toggle(&mut self) -> Result<(), Self::Error> {
         self.toggle();
         Ok(())
     }
-}
+}*/
 
 impl<const P: char> PartiallyErasedPin<Output<OpenDrain>, P> {
     #[inline(always)]
@@ -140,16 +142,14 @@ impl<const P: char> PartiallyErasedPin<Output<OpenDrain>, P> {
 }
 
 impl<const P: char> InputPin for PartiallyErasedPin<Output<OpenDrain>, P> {
-    type Error = Infallible;
-
     #[inline(always)]
-    fn is_high(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_high())
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_high(self))
     }
 
     #[inline(always)]
-    fn is_low(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_low())
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_low(self))
     }
 }
 
@@ -167,15 +167,13 @@ impl<MODE, const P: char> PartiallyErasedPin<Input<MODE>, P> {
 }
 
 impl<MODE, const P: char> InputPin for PartiallyErasedPin<Input<MODE>, P> {
-    type Error = Infallible;
-
     #[inline(always)]
-    fn is_high(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_high())
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_high(self))
     }
 
     #[inline(always)]
-    fn is_low(&self) -> Result<bool, Self::Error> {
-        Ok(self.is_low())
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Self::is_low(self))
     }
 }

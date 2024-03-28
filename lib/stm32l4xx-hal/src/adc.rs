@@ -433,11 +433,11 @@ impl ADC {
 }
 
 // impl<C> OneShot<ADC, u16, C> for ADC
-impl<C> ADC
-where
-    C: Channel,
+impl/*<C>*/ ADC
+/*where
+    C: Channel,*/
 {
-    fn read(&mut self, channel: &mut C) -> nb::Result<u16, Infallible> {
+    pub fn read<C: Channel>(&mut self, channel: &mut C) -> nb::Result<u16, Infallible> {
         self.configure_sequence(channel, Sequence::One, self.sample_time);
 
         self.start_conversion();
@@ -636,6 +636,8 @@ impl Default for SampleTime {
 
 /// Implemented for all types that represent ADC channels
 pub trait Channel {
+    fn channel() -> u8;
+
     fn set_sample_time(&mut self, adc: &ADC1, sample_time: SampleTime);
 }
 
@@ -650,6 +652,10 @@ macro_rules! adc_pins {
     ) => {
         $(
             impl Channel for $pin {
+                fn channel() -> u8 {
+                    $id
+                }
+
                 fn set_sample_time(&mut self,
                     adc: &ADC1,
                     sample_time: SampleTime,

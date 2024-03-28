@@ -14,7 +14,7 @@ use crate::dma::dma2;
 use crate::dma::{self, dma1, TransferPayload};
 use crate::dmamux::{DmaInput, DmaMux};
 use crate::gpio::{Alternate, PushPull};
-use crate::hal::spi::{FullDuplex, Mode, Phase, Polarity};
+use crate::hal::spi::{SpiBus, Mode, Phase, Polarity};
 use crate::rcc::{Clocks, Enable, RccBus, Reset};
 use crate::time::Hertz;
 
@@ -30,6 +30,16 @@ pub enum Error {
     ModeFault,
     /// CRC error
     Crc,
+}
+
+impl embedded_hal::spi::Error for Error {
+    fn kind(&self) -> embedded_hal::spi::ErrorKind {
+        match self {
+            Error::Overrun => embedded_hal::spi::ErrorKind::Overrun,
+            Error::ModeFault => embedded_hal::spi::ErrorKind::ModeFault,
+            Error::Crc => embedded_hal::spi::ErrorKind::Other,
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -234,51 +244,109 @@ macro_rules! hal {
                 }
             }
 
-            impl<PINS> FullDuplex<u8> for Spi<$SPIX, PINS> {
-                type Error = Error;
+            impl<PINS> Spi<$SPIX, PINS> {
+                pub fn read_byte(&mut self) -> Result<u8, Error> {
+                    loop {
+                        let sr = self.spi.sr.read();
 
-                fn read(&mut self) -> nb::Result<u8, Error> {
-                    let sr = self.spi.sr.read();
-
-                    Err(if sr.ovr().bit_is_set() {
-                        nb::Error::Other(Error::Overrun)
-                    } else if sr.modf().bit_is_set() {
-                        nb::Error::Other(Error::ModeFault)
-                    } else if sr.crcerr().bit_is_set() {
-                        nb::Error::Other(Error::Crc)
-                    } else if sr.rxne().bit_is_set() {
-                        // NOTE(read_volatile) read only 1 byte (the svd2rust API only allows
-                        // reading a half-word)
-                        return Ok(unsafe {
-                            ptr::read_volatile(&self.spi.dr as *const _ as *const u8)
-                        });
-                    } else {
-                        nb::Error::WouldBlock
-                    })
+                        if sr.ovr().bit_is_set() {
+                            return Err(Error::Overrun);
+                        } else if sr.modf().bit_is_set() {
+                            return Err(Error::ModeFault);
+                        } else if sr.crcerr().bit_is_set() {
+                            return Err(Error::Crc);
+                        } else if sr.rxne().bit_is_set() {
+                            // NOTE(read_volatile) read only 1 byte (the svd2rust API only allows
+                            // reading a half-word)
+                            return Ok(unsafe {
+                                ptr::read_volatile(&self.spi.dr as *const _ as *const u8)
+                            });
+                        }
+                    }
                 }
 
-                fn send(&mut self, byte: u8) -> nb::Result<(), Error> {
-                    let sr = self.spi.sr.read();
+                pub fn write_byte(&mut self, byte: u8) -> Result<(), Error> {
+                    loop {
+                        let sr = self.spi.sr.read();
 
-                    Err(if sr.ovr().bit_is_set() {
-                        nb::Error::Other(Error::Overrun)
-                    } else if sr.modf().bit_is_set() {
-                        nb::Error::Other(Error::ModeFault)
-                    } else if sr.crcerr().bit_is_set() {
-                        nb::Error::Other(Error::Crc)
-                    } else if sr.txe().bit_is_set() {
-                        // NOTE(write_volatile) see note above
-                        unsafe { ptr::write_volatile(&self.spi.dr as *const _ as *mut u8, byte) }
-                        return Ok(());
-                    } else {
-                        nb::Error::WouldBlock
-                    })
+                        if sr.ovr().bit_is_set() {
+                            return Err(Error::Overrun);
+                        } else if sr.modf().bit_is_set() {
+                            return Err(Error::ModeFault);
+                        } else if sr.crcerr().bit_is_set() {
+                            return Err(Error::Crc);
+                        } else if sr.txe().bit_is_set() {
+                            // NOTE(write_volatile) see note above
+                            unsafe { ptr::write_volatile(&self.spi.dr as *const _ as *mut u8, byte) }
+                            return Ok(());
+                        }
+                    }
                 }
             }
 
-            impl<PINS> crate::hal::blocking::spi::transfer::Default<u8> for Spi<$SPIX, PINS> {}
+            impl<PINS> embedded_hal::spi::ErrorType for Spi<$SPIX, PINS> {
+                type Error = Error;
+            }
 
-            impl<PINS> crate::hal::blocking::spi::write::Default<u8> for Spi<$SPIX, PINS> {}
+            impl<PINS> SpiBus<u8> for Spi<$SPIX, PINS> {
+                fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+                    for word in words {
+                        *word = self.read_byte()?;
+                    }
+                    Ok(())
+                }
+
+                fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
+                    for word in words {
+                        self.write_byte(*word)?;
+                        let _ = self.read_byte();
+                    }
+                    Ok(())
+                }
+
+                fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
+                    // TODO: is this correct?
+
+                    let mut read_iter = read.iter_mut();
+
+                    // Write out all of the bytes,
+                    // and fill up the read buffer as much as we can
+                    for wb in write {
+                        self.write_byte(*wb)?;
+                        let rb = self.read_byte()?;
+
+                        if let Some(dst) = read_iter.next() {
+                            *dst = rb;
+                        }
+                    }
+
+                    // If the read buffer still isn't full,
+                    // we need to write out padding to keep getting data
+                    for dst in read_iter {
+                        // TODO: Do we need configurable padding?
+                        self.write_byte(0)?;
+                        *dst = self.read_byte()?;
+                    }
+
+                    Ok(())
+                }
+
+                fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+                    for b in words {
+                        self.write_byte(*b)?;
+                        *b = self.read_byte()?;
+                    }
+                    Ok(())
+                }
+
+                fn flush(&mut self) -> Result<(), Self::Error> {
+                    Ok(())
+                }
+            }
+
+            //impl<PINS> crate::hal::blocking::spi::transfer::Default<u8> for Spi<$SPIX, PINS> {}
+
+            //impl<PINS> crate::hal::blocking::spi::write::Default<u8> for Spi<$SPIX, PINS> {}
         )+
     }
 }

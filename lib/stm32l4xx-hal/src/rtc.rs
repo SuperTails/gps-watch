@@ -33,11 +33,10 @@ pub mod rtc3;
 pub use rtc3 as rtc_registers;
 
 use fugit::ExtU32;
-use void::Void;
 
 use crate::{
     datetime::*,
-    hal::timer::{self, Cancel as _},
+    //hal::timer::{self, Cancel as _},
     pwr,
     rcc::{APB1R1, BDCR},
     stm32::{EXTI, RTC},
@@ -545,7 +544,7 @@ pub struct WakeupTimer<'r> {
     rtc: &'r mut Rtc,
 }
 
-impl timer::Periodic for WakeupTimer<'_> {}
+/*impl timer::Periodic for WakeupTimer<'_> {}
 
 impl timer::CountDown for WakeupTimer<'_> {
     type Time = u32;
@@ -648,6 +647,7 @@ impl timer::Cancel for WakeupTimer<'_> {
         Ok(())
     }
 }
+*/
 
 /// Raw set time
 /// Expects init mode enabled and write protection disabled

@@ -10,7 +10,7 @@ use gps_watch::{
 };
 
 use chrono::{prelude::*, DateTime, Utc};
-use core::{fmt::Write, num::Wrapping, sync::atomic::AtomicUsize};
+use core::{num::Wrapping, sync::atomic::AtomicUsize};
 use defmt::{debug, error, info, trace};
 use embedded_graphics::{
     mono_font::{iso_8859_3::FONT_6X12, MonoTextStyle},
@@ -103,7 +103,9 @@ pub enum RedrawEvent {
 )]
 mod app {
 
+    use embedded_io::{Read, Write};
     use gps_watch::ubx::packets::CfgRst;
+    use core::fmt::Write as _;
 
     use super::*;
 
@@ -380,15 +382,17 @@ mod app {
     fn on_uart(cx: on_uart::Context) {
         trace!("on_uart enter");
         // Rxne
-        if let Ok(b) = cx.local.uart.uart.read() {
+        if cx.local.uart.uart.can_read() {
             // If the recv buffer is full, then drop the received value
+            let mut b = 0;
+            let _ = cx.local.uart.uart.read_exact(core::slice::from_mut(&mut b)); // TODO: Should we ignore UART errors?
             let _ = cx.local.uart.rx_send.try_write(b);
             UART_RX_COUNTER.fetch_add(1, Ordering::Relaxed);
         }
         // Txe
         if cx.local.uart.uart.can_write() {
             if let Some(b) = cx.local.uart.tx_recv.try_read() {
-                cx.local.uart.uart.write(b).unwrap();
+                cx.local.uart.uart.write_all(&[b]).unwrap();
                 UART_TX_COUNTER.fetch_add(1, Ordering::Relaxed);
             }
             if !cx.local.uart.tx_recv.is_empty() {
